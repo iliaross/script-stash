@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# check-apache-vhosts.pl (https://github.com/iliaross/script-stash)
+# apache-check-vhosts.pl (https://github.com/iliaross/script-stash)
 # Copyright Ilia Ross <ilia@ross.gdn>
 # Licensed under the MIT License
 #
