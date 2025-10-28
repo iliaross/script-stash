@@ -1,5 +1,5 @@
 #!/usr/bin/env perl
-# net-lookup.pl (https://github.com/iliaross/script-stash)
+# net-ip-lookup.pl (https://github.com/iliaross/script-stash)
 # Copyright Ilia Ross <ilia@ross.gdn>
 # Licensed under the MIT License
 #
@@ -10,10 +10,10 @@
 #
 # Usage: netinfo.pl [--quick] [IP|HOSTNAME]
 # Examples:
-#   netinfo.pl                               # Auto-detect your IP
-#   netinfo.pl 8.8.8.8                       # Lookup IP
-#   netinfo.pl google.com                    # Lookup hostname
-#   netinfo.pl --quick 2001:4860:4860::8844  # Quick mode (skip diagnostics)
+#   net-ip-lookup.pl                               # Auto-detect your IP
+#   net-ip-lookup.pl 8.8.8.8                       # Lookup IP
+#   net-ip-lookup.pl google.com                    # Lookup hostname
+#   net-ip-lookup.pl --quick 2001:4860:4860::8844  # Quick mode (skip diagnostics)
 
 use strict;
 use warnings;
