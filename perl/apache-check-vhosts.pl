@@ -28,10 +28,10 @@ sub color
 {
 my ($c, $s) = @_;
 return $s unless $use_color;
-my %m = (reset => 0, bold => 1, dim => 2, red => 91, green => 92, yellow => 93,
-         blue => 94, magenta => 95, cyan => 96, gray => 90);
-
-"\e[$m{$c}m$s\e[0m";
+my %colors = (reset => 0, bold => 1, dim => 2, red => 91, green => 92,
+	      yellow => 93, blue => 94, magenta => 95, cyan => 96, gray => 90);
+return $s unless exists $colors{$c};
+"\e[$colors{$c}m$s\e[0m";
 }
 
 # Symbols
