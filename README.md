@@ -7,7 +7,12 @@ A collection of useful scripts for sysadmin tasks, automation, and everyday prob
 #### Perl Scripts
 
 - **check-apache-vhosts.pl**  
-  Tests Apache virtual host configurations by enabling them one by one and verifying the configuration remains valid
+  Tests Apache virtual host configurations by enabling them one by one and
+  verifying the configuration remains valid
+- **net-lookup.pl**  
+  Lookup comprehensive network information about an IP address or hostname
+  including geolocation, ISP, ASN, timezone. Performs network diagnostics (ping,
+  traceroute, port scanning)
 
 #### Bash Scripts
 
