@@ -1,6 +1,7 @@
 ## Script Stash
 
-A collection of useful scripts for sysadmin tasks, automation, and everyday problem-solving. This is my personal toolbox of utilities I built over time.
+A collection of useful scripts for sysadmin tasks, automation, and everyday
+problem-solving. This is my personal toolbox of utilities I built over time.
 
 ### Scripts
 
@@ -16,15 +17,20 @@ A collection of useful scripts for sysadmin tasks, automation, and everyday prob
 
 #### Bash Scripts
 
-_(Coming soon)_
+- **update-hosts-segment.bash**
+  Recreates `/etc/hosts` entries for a specific segment block based on the
+  template while keeping the rest of the file unchanged and saving a backup
+  first
 
 ### Requirements
 
-Scripts might have different dependencies. Check the comments at the top of each script for any specific requirements.
+Scripts might have different dependencies. Check the comments at the top of each
+script for any specific requirements.
 
 ### Contributing
 
-This is a personal collection, but if you find a bug or have a suggestion, feel free to open an issue.
+This is a personal collection, but if you find a bug or have a suggestion, feel
+free to open an issue.
 
 ### License
 
