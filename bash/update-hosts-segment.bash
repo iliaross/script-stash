@@ -45,13 +45,13 @@
 #
 # The script expects a header block in /etc/hosts that looks like this:
 #
-#   # Segment: Parallels [auto]
+#   # Segment: Parallels [auto-local]
 #   # Systems: alma10-pro/10.211.55.34 ubuntu24-gpl/10.211.55.5
 #   # Domains: virtualmin.dev
 #   # Records: host autoconfig autodiscover mail webmail admin ftp www
 #
 # It will:
-#   - Find the matching "# Segment: <name> [auto]" block
+#   - Find the matching "# Segment: <name> [auto|auto-local]" block
 #   - Read the Systems, Domains and Records lines
 #   - Replace the lines below them (until the next "#" line or end of file)
 #     with freshly generated /etc/hosts entries
@@ -119,7 +119,7 @@ section "Detecting segment block"
 
 # Find the start line of the relevant segment block
 start_line="$(
-	grep -nE "^[[:space:]]*# [[:space:]]*Segment[[:space:]]*:?[[:space:]]*${SEGMENT}[[:space:]]*\[auto\]" "$HOSTS_FILE" \
+	grep -nE "^[[:space:]]*# [[:space:]]*Segment[[:space:]]*:?[[:space:]]*${SEGMENT}[[:space:]]*\[auto(-local)?\]" "$HOSTS_FILE" \
 		| head -n1 \
 		| cut -d: -f1
 )" || true
