@@ -8,11 +8,10 @@
 # In simple terms:
 # - Segment:
 #   A label for a group of systems, e.g. "Parallels".
-#   You can run the script like:
-#     ./hosts-update-segment.bash
+#   You must pass the segment name explicitly:
 #     ./hosts-update-segment.bash Parallels
+#     ./hosts-update-segment.bash Synology
 #     ./hosts-update-segment.bash Parallels /custom/backup/dir
-#   If the first argument is omitted, it defaults to "Parallels".
 #
 # - Systems:
 #   A list of machines with their IPs in "name/ip" form.
@@ -40,7 +39,7 @@
 #   A backup of /etc/hosts is made before any modification.
 #
 #   Examples:
-#     ./hosts-update-segment.bash
+#     ./hosts-update-segment.bash Parallels
 #     ./hosts-update-segment.bash Parallels /var/backups/hosts
 #
 # The script expects a header block in /etc/hosts that looks like this:
@@ -58,9 +57,19 @@
 
 set -euo pipefail
 
+usage() {
+	printf 'Usage: %s <segment-name> [backup-dir]\n' "hosts-update-segment.bash" >&2
+	exit 1
+}
+
+# Require at least the segment name
+if [ "$#" -lt 1 ]; then
+	usage
+fi
+
 # Configuration
 HOSTS_FILE="/etc/hosts"
-SEGMENT="${1:-Parallels}"
+SEGMENT="$1"
 
 BACKUP_DIR_DEFAULT="$HOME/Backups/System/etc"
 if [ "${2:-}" != "" ]; then
