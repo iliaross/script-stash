@@ -17,7 +17,7 @@ problem-solving. This is my personal toolbox of utilities I built over time.
 
 #### Bash Scripts
 
-- **update-hosts-segment.bash**  
+- **hosts-update-segment.bash**  
   Recreates `/etc/hosts` entries for a specific segment block based on the
   template while keeping the rest of the file unchanged and saving a backup
   first

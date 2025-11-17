@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# update-hosts-segment.bash (https://github.com/iliaross/script-stash)
+# hosts-update-segment.bash (https://github.com/iliaross/script-stash)
 # Copyright Ilia Ross <ilia@ross.gdn>
 # Licensed under the MIT License
 #
@@ -9,9 +9,9 @@
 # - Segment:
 #   A label for a group of systems, e.g. "Parallels".
 #   You can run the script like:
-#     ./update-hosts-segment.bash
-#     ./update-hosts-segment.bash Parallels
-#     ./update-hosts-segment.bash Parallels /custom/backup/dir
+#     ./hosts-update-segment.bash
+#     ./hosts-update-segment.bash Parallels
+#     ./hosts-update-segment.bash Parallels /custom/backup/dir
 #   If the first argument is omitted, it defaults to "Parallels".
 #
 # - Systems:
@@ -40,8 +40,8 @@
 #   A backup of /etc/hosts is made before any modification.
 #
 #   Examples:
-#     ./update-hosts-segment.bash
-#     ./update-hosts-segment.bash Parallels /var/backups/hosts
+#     ./hosts-update-segment.bash
+#     ./hosts-update-segment.bash Parallels /var/backups/hosts
 #
 # The script expects a header block in /etc/hosts that looks like this:
 #
