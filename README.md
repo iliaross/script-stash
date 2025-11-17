@@ -21,6 +21,11 @@ problem-solving. This is my personal toolbox of utilities I built over time.
   Recreates `/etc/hosts` entries for a specific segment block based on the
   template while keeping the rest of the file unchanged and saving a backup
   first
+- **hosts-sync.bash**  
+  Syncs local Git projects to remote `debug-*` hosts defined in `/etc/hosts`,
+  with specific support for Webmin and its modules, filtering by running virtual
+  machine or domain patterns, and syncing either full projects or single files
+  over `rsync`.
 - **hosts-connect.bash**  
   Convenience wrapper around `ssh` to connect to `debug-*` hosts using short
   names, resolving the full hostname from `/etc/hosts` and reading the SSH
