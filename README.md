@@ -9,18 +9,18 @@ problem-solving. This is my personal toolbox of utilities I built over time.
 
 - **check-apache-vhosts.pl**  
   Tests Apache virtual host configurations by enabling them one by one and
-  verifying the configuration remains valid
+  verifying the configuration remains valid.
 - **net-ip-lookup.pl**  
   Lookup comprehensive network information about an IP address or hostname
   including geolocation, ISP, ASN, timezone. Performs network diagnostics (ping,
-  traceroute, port scanning)
+  traceroute, port scanning).
 
 #### Bash Scripts
 
 - **hosts-update-segment.bash**  
   Recreates `/etc/hosts` entries for a specific segment block based on the
   template while keeping the rest of the file unchanged and saving a backup
-  first
+  first.
 - **hosts-sync.bash**  
   Syncs local Git projects to remote `debug-*` hosts defined in `/etc/hosts`,
   with specific support for Webmin and its modules, filtering by running virtual
