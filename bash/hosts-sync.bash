@@ -220,12 +220,7 @@ rsyncdefflags="-rvz"
 rsyncextraflags=""
 rsyncdefexcludeflags="--exclude=*.wbt.gz* --exclude=*.css.gz* --exclude=*.js.gz* --exclude=.git --exclude=.git-data --exclude=.scripts --exclude=.art --exclude=node_modules --exclude=*.fuse_* --exclude=.build --exclude=.backups --exclude=.vscode"
 
-if [ "$arg4" != "force" ]; then
-	rsyncextraflags="--no-links --existing"
-elif [ "$project_root" = "usermin" ]; then
-	rsyncextraflags="--copy-links"
-fi
-
+# Decide mode and source path
 if [ "$single_file_sync" -eq 1 ]; then
 	project_source_rel="$project_rel"
 	source_rel="${project_source_rel}/${single_file_name}"
@@ -237,8 +232,20 @@ elif [ -n "$arg2" ] && [[ "$arg2" != --running* ]] && [[ "$arg2" != --regex:* ]]
 else
 	project_source_rel="$project_root"
 	source_rel="${project_source_rel}/"
-	rsyncextraflags=""
 	mode_label="full"
+fi
+
+# Decide rsyncextraflags *after* we know the mode:
+# - full  : --no-links --existing (unless force)
+# - single: --no-links only       (unless force)
+if [ "$arg4" != "force" ]; then
+	if [ "$mode_label" = "full" ]; then
+		rsyncextraflags="--no-links --existing"
+	else
+		rsyncextraflags="--no-links"
+	fi
+elif [ "$project_root" = "usermin" ]; then
+	rsyncextraflags="--copy-links"
 fi
 
 printf "Mode     : %s\n" "$(color cyan "$mode_label")"
@@ -516,6 +523,20 @@ fi
 projectroottarget="$project_root"
 projectroottarget_usermin=""
 
+# Special handling for Webmin modules (e.g. webmin/xterm, webmin/filemin)
+if [ "$project_root" = "webmin" ]; then
+	case "$project_rel" in
+		webmin/*)
+			# Take first component after "webmin/" as module name
+			module="${project_rel#webmin/}"
+			module="${module%%/*}"
+			if [ -n "$module" ]; then
+				projectroottarget="webmin/$module"
+			fi
+			;;
+	esac
+fi
+
 if [[ "$project_root" =~ ^(authentic-theme-src|virtual-server-theme|server-manager|virtualmin-.*)$ ]]; then
 	if [ -n "$arg2" ] && [[ "$arg2" != --running* ]] && [[ "$arg2" != --regex:* ]]; then
 		subprojectdir="$project_rel"
@@ -677,24 +698,23 @@ process_host() {
 	if [ "$project_root" = "virtualmin-install" ] || \
 	   [ "$project_root" = "cloudmin-install" ] || \
 	   [ "$project_root" = "slib" ]; then
-		projectroottarget="/root/"
-		target="/root/"
+		projectroottarget="root"
+		target="root"
 	fi
 
 	if [ "$project_root" = "webmin-ci-cd" ]; then
-		projectroottarget="/root/"
-		target="/root/build-scripts"
+		projectroottarget="root"
+		target="root/build-scripts"
 	fi
-
 	if [ "$project_root" = "webmin-ci-cd" ] && [ "$server_key" = "rocky10-pro" ]; then
-		if [ "$arg2" = "sign-repo.bash" ] || [ "$arg2" = "sign-all-repos.bash" ]; then
-			target="/home/rocky10-pro/.local/sbin"
+		if [[ "$arg2" == *"sign-repo.bash" ]] || [[ "$arg2" == *"sign-all-repos.bash" ]]; then
+			target="home/rocky10-pro/.local/sbin"
 		fi
 	fi
 
 	if [ "$project_root" = "wikisuite-packages" ] && printf '%s\n' "$server_raw" | grep -q 'tiki'; then
-		projectroottarget="/root/"
-		target="/root/"
+		projectroottarget="root"
+		target="root"
 	fi
 
 	if [ "$project_rel" = "server-manager/server-manager" ]; then
