@@ -12,7 +12,9 @@
 #   hosts-update-segment.bash
 #
 # Features
-#   - Scans /etc/hosts for all "debug-*" entries
+#   - Scans /etc/hosts for all "debug-*" entries. If an entry contains a port
+#     (e.g. debug-cloud-pubkey-1.2.3.4:2222), it prefers connecting by IP
+#     and uses that port for SSH/rsync.
 #   - Detects "local" debug bases only from [auto-local] segments
 #   - Detects locally running virtual machines via "prlctl" or "virsh" and
 #     matches them to those bases
@@ -121,6 +123,30 @@ in_list() {
 	local needle="$1"; shift || true
 	for x in "$@"; do
 		[ "$x" = "$needle" ] && return 0
+	done
+	return 1
+}
+
+get_host_port() {
+	local key="$1"
+	local i
+	for (( i = 0; i < ${#host_ports_keys[@]}; i++ )); do
+		if [ "${host_ports_keys[$i]}" = "$key" ]; then
+			printf '%s\n' "${host_ports_vals[$i]}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+get_host_ip() {
+	local key="$1"
+	local i
+	for (( i = 0; i < ${#host_ips_keys[@]}; i++ )); do
+		if [ "${host_ips_keys[$i]}" = "$key" ]; then
+			printf '%s\n' "${host_ips_vals[$i]}"
+			return 0
+		fi
 	done
 	return 1
 }
@@ -341,12 +367,20 @@ fi
 # Hosts from /etc/hosts
 password="${DEBUG_SSHPASS:-}"
 if [ -z "$password" ]; then
-	printf "%s\n" "$(color red "Error: SSHPASS is not set (password must come from environment / keychain).")" >&2
+	printf "%s\n" "$(color red "Error: DEBUG_SSHPASS is not set (password must come from environment / keychain).")" >&2
 	exit 1
 fi
 
+declare -a host_ports_keys
+declare -a host_ports_vals
+declare -a host_ips_keys
+declare -a host_ips_vals
 declare -a debug_hosts_all
 declare -a local_bases
+host_ports_keys=()
+host_ports_vals=()
+host_ips_keys=()
+host_ips_vals=()
 debug_hosts_all=()
 local_bases=()
 
@@ -376,6 +410,9 @@ while IFS= read -r line; do
 		*'#') continue ;;
 	esac
 
+	# Extract IP (first field) from this line
+	ip_field="$(printf '%s\n' "$line" | awk '{print $1}')"
+
 	# Host lines
 	for tok in $line; do
 		case "$tok" in
@@ -383,6 +420,25 @@ while IFS= read -r line; do
 				# Collect all debug hosts
 				if ! in_list "$tok" "${debug_hosts_all[@]}"; then
 					debug_hosts_all+=( "$tok" )
+				fi
+
+				# Record SSH port from hostname if set, e.g.
+				# debug-cloud-pubkey-1.2.3.4:2222-debian
+				if [[ "$tok" =~ ^debug-[^:[:space:]]*:([0-9]{1,5})[^[:space:]]*$ ]]; then
+					port="${BASH_REMATCH[1]}"
+					# Optional sanity: only accept 1–65535
+					if (( port >= 1 && port <= 65535 )); then
+						if ! in_list "$tok" "${host_ports_keys[@]}"; then
+							host_ports_keys+=( "$tok" )
+							host_ports_vals+=( "$port" )
+						fi
+					fi
+				fi
+
+				# Record IP for this debug host token
+				if [ -n "$ip_field" ] && ! in_list "$tok" "${host_ips_keys[@]}"; then
+					host_ips_keys+=( "$tok" )
+					host_ips_vals+=( "$ip_field" )
 				fi
 
 				# Collect local_bases only inside [auto-local] segment
@@ -598,6 +654,27 @@ process_host() {
 	local initial_source="$source_rel"
 	local user="$default_user"
 	local local_sshnocheck="$sshnocheck"
+
+	# If a port was recorded for this host, add it to SSH options
+	local local_sshport_opt=""
+	local ssh_port=""
+	ssh_port="$(get_host_port "$server_raw" 2>/dev/null || true)"
+	if [ -n "$ssh_port" ]; then
+		local_sshport_opt=" -p $ssh_port"
+	fi
+
+	# Decide what hostname/IP to use for ssh/rsync
+	local ssh_host="debug-$server"  # default: normal debug-FQDN
+	if [ -n "$ssh_port" ]; then
+		# For port-encoded hosts, prefer connecting by IP
+		local ssh_ip=""
+		ssh_ip="$(get_host_ip "$server_raw" 2>/dev/null || true)"
+		if [ -n "$ssh_ip" ]; then
+			ssh_host="$ssh_ip"
+		fi
+	fi
+
+
 	local freebsdwebmindir=0
 	local rhelwebmindir=0
 
@@ -802,9 +879,9 @@ process_host() {
 
 		local cmd=""
 		if printf '%s\n' "$local_sshnocheck" | grep -q ' -o PubkeyAuthentication=no'; then
-			cmd="$sshcmdprelocal$sshpass_cmd -p $password $ssh_cmd -t -T $local_sshnocheck root@debug-$server \"$sshcmdlocal\""
+			cmd="$sshcmdprelocal$sshpass_cmd -p $password $ssh_cmd$local_sshport_opt -t -T $local_sshnocheck root@$ssh_host \"$sshcmdlocal\""
 		else
-			cmd="$sshcmdprelocal$ssh_cmd -t -T $local_sshnocheck root@debug-$server \"$sshcmdlocal\""
+			cmd="$sshcmdprelocal$ssh_cmd$local_sshport_opt -t -T $local_sshnocheck root@$ssh_host \"$sshcmdlocal\""
 		fi
 
 		printf "\nSyncing to    : %s (command)\n" "$(color cyan "$server")"
@@ -838,7 +915,7 @@ process_host() {
 	# Rsync sync
 	printf "\nSyncing to    : %s (Webmin)\n" "$(color cyan "$server")"
 	local cmdsync
-	cmdsync="${local_nohup_sshpass}${rsync_cmd} ${rsyncdefflags} ${rsyncextraflags} ${rsyncdefexcludeflags} -e \"ssh ${local_sshnocheck}\" \"$sourcefull\" $user@debug-$server:\"$targetfull\"/"
+	cmdsync="${local_nohup_sshpass}${rsync_cmd} ${rsyncdefflags} ${rsyncextraflags} ${rsyncdefexcludeflags} -e \"$ssh_cmd$local_sshport_opt ${local_sshnocheck}\" \"$sourcefull\" $user@$ssh_host:\"$targetfull\"/"
 	local cmd_print="$cmdsync"
 	if [ -n "$password" ]; then
 		cmd_print="${cmd_print//$password/<password>}"
@@ -866,7 +943,7 @@ process_host() {
 
 	if [ -n "$target_usermin" ]; then
 		printf "Syncing to    : %s (Usermin)\n" "$(color cyan "$server")"
-		cmdsync="${local_nohup_sshpass}${rsync_cmd} ${rsyncdefflags} ${rsyncextraflags} ${rsyncdefexcludeflags} -e \"ssh ${local_sshnocheck}\" \"$sourcefull\" $user@debug-$server:\"$targetfull_usermin\"/"
+		cmdsync="${local_nohup_sshpass}${rsync_cmd} ${rsyncdefflags} ${rsyncextraflags} ${rsyncdefexcludeflags} -e \"$ssh_cmd$local_sshport_opt ${local_sshnocheck}\" \"$sourcefull\" $user@$ssh_host:\"$targetfull_usermin\"/"
 		local cmd_print="$cmdsync"
 		if [ -n "$password" ]; then
 			cmd_print="${cmd_print//$password/<password>}"
@@ -896,9 +973,9 @@ process_host() {
 
 			local cmd
 			if printf '%s\n' "$local_sshnocheck" | grep -q ' -o PubkeyAuthentication=no'; then
-				cmd="$sshpass_cmd -p $password $ssh_cmd -t -T $local_sshnocheck root@debug-$server \"$min_restart_cmd\""
+				cmd="$sshpass_cmd -p $password $ssh_cmd$local_sshport_opt -t -T $local_sshnocheck root@$ssh_host \"$min_restart_cmd\""
 			else
-				cmd="$ssh_cmd -t -T $local_sshnocheck root@debug-$server \"$min_restart_cmd\""
+				cmd="$ssh_cmd$local_sshport_opt -t -T $local_sshnocheck root@$ssh_host \"$min_restart_cmd\""
 			fi
 			eval "$nohup_cmd $cmd >/dev/null 2>&1 &"
 		) &
