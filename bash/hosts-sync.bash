@@ -732,6 +732,40 @@ process_host() {
 		fi
 	fi
 
+
+	# For single-file syncs of, mirror the subdirectory layout
+	# inside the repo on the remote side.
+	if [ "$mode_label" = "single" ]; then
+		# Strip the repo root from source_rel to get path inside the repo.
+		# Examples:
+		#   project_root = authentic-theme-src
+		#   source_rel   = authentic-theme-src/unauthenticated/css/authentic.src.css
+		#   rel_in_repo  = unauthenticated/css/authentic.src.css
+		#
+		#   project_root = virtualmin-gpl
+		#   source_rel   = virtualmin-gpl/lang/en
+		#   rel_in_repo  = lang/en
+		local rel_in_repo rel_subdir
+		rel_in_repo="${source_rel#$project_root/}"
+
+		# Only adjust if we actually stripped the prefix and have a subpath
+		if [ "$rel_in_repo" != "$source_rel" ] && [[ "$rel_in_repo" == */* ]]; then
+			# If the local source is a directory, keep the whole relative path
+			if [ -d "$git_home/$source_rel" ]; then
+				rel_subdir="$rel_in_repo"
+			else
+				rel_subdir="${rel_in_repo%/*}"
+			fi
+
+			if [ -n "$rel_subdir" ]; then
+				target="${target}/${rel_subdir}"
+				if [ -n "$target_usermin" ]; then
+					target_usermin="${target_usermin}/${rel_subdir}"
+				fi
+			fi
+		fi
+	fi
+
 	if [ "$project_root" = "webmin-jailkit" ]; then
 		projectroottarget="${projectroottarget/webmin-jailkit/webmin/jailkit}"
 	fi
