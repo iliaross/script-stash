@@ -735,7 +735,9 @@ process_host() {
 
 	# For single-file syncs of, mirror the subdirectory layout
 	# inside the repo on the remote side.
-	if [ "$mode_label" = "single" ]; then
+	if [ "$mode_label" = "single" ] && \
+	   [ "$project_root" != "webmin" ] && \
+	   [ "$project_root" != "usermin" ]; then
 		# Strip the repo root from source_rel to get path inside the repo.
 		# Examples:
 		#   project_root = authentic-theme-src
