@@ -179,7 +179,9 @@ elif [[ "$arg2" == --running=* ]]; then
 fi
 
 if printf '%s %s %s %s\n' "$arg2" "$arg3" "$arg4" "$sshcmd" | grep -q -- '--regex:'; then
-	regex_val="$(printf '%s %s %s %s\n' "$arg2" "$arg3" "$arg4" "$sshcmd" | grep -- '--regex:' | head -n1)"
+	regex_val="$(printf '%s %s %s %s\n' "$arg2" "$arg3" "$arg4" "$sshcmd" \
+		| grep -o -- '--regex:[^[:space:]]*' \
+		| head -n1)"
 	domain_filter="${regex_val#--regex:}"
 	domain_filter="$(printf '%s\n' "$domain_filter" | trim)"
 fi
@@ -445,10 +447,10 @@ while IFS= read -r line; do
 				if [ "$current_is_local" -eq 1 ]; then
 					server_no_debug="${tok#debug-}"
 					server_no_star="${server_no_debug%\*}"
-					server_name="${server_no_star%%.*}"
-					[ -z "$server_name" ] && continue
-					if ! in_list "$server_name" "${local_bases[@]}"; then
-						local_bases+=( "$server_name" )
+					server_fqdn="$server_no_star"          # e.g. ubuntu22-pro.virtualmin.dev
+					[ -z "$server_fqdn" ] && continue
+					if ! in_list "$server_fqdn" "${local_bases[@]}"; then
+						local_bases+=( "$server_fqdn" )
 					fi
 				fi
 				;;
@@ -471,9 +473,9 @@ for h in "${debug_hosts_all[@]}"; do
 	server_no_star="${server_no_debug%\*}"
 	server="$server_no_star"
 	server_key="${server%%.*}"
-
+	
 	is_local=0
-	if [ "${#local_bases[@]}" -ne 0 ] && in_list "$server_key" "${local_bases[@]}"; then
+	if [ "${#local_bases[@]}" -ne 0 ] && in_list "$server" "${local_bases[@]}"; then
 		is_local=1
 	fi
 
