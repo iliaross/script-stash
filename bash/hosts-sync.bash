@@ -735,30 +735,63 @@ process_host() {
 	fi
 
 
-	# For single-file syncs of, mirror the subdirectory layout
+	# For single-file/path syncs, mirror the subdirectory layout
 	# inside the repo on the remote side.
-	if [ "$mode_label" = "single" ] && \
-	   [ "$project_root" != "webmin" ] && \
-	   [ "$project_root" != "usermin" ]; then
-		# Strip the repo root from source_rel to get path inside the repo.
-		# Examples:
-		#   project_root = authentic-theme-src
-		#   source_rel   = authentic-theme-src/unauthenticated/css/authentic.src.css
-		#   rel_in_repo  = unauthenticated/css/authentic.src.css
-		#
-		#   project_root = virtualmin-gpl
-		#   source_rel   = virtualmin-gpl/lang/en
-		#   rel_in_repo  = lang/en
-		local rel_in_repo rel_subdir
-		rel_in_repo="${source_rel#$project_root/}"
+	if [ "$mode_label" = "single" ] && [ "$project_root" != "Virtualmin-Config" ]; then
+		local base_rel rel_to_base rel_subdir
 
-		# Only adjust if we actually stripped the prefix and have a subpath
-		if [ "$rel_in_repo" != "$source_rel" ] && [[ "$rel_in_repo" == */* ]]; then
-			# If the local source is a directory, keep the whole relative path
+		# Decide which part of the repo maps to the remote target:
+		# - webmin/usermin: include the module (webmin/mysql, usermin/mailbox, ...)
+		# - everything else: use project_root
+		if [ "$project_root" = "webmin" ]; then
+			case "$project_rel" in
+				webmin/*)
+					local module="${project_rel#webmin/}"
+					module="${module%%/*}"
+					if [ -n "$module" ]; then
+						base_rel="webmin/$module"
+					else
+						base_rel="webmin"
+					fi
+					;;
+				*)
+					base_rel="webmin"
+					;;
+			esac
+		elif [ "$project_root" = "usermin" ]; then
+			case "$project_rel" in
+				usermin/*)
+					local module="${project_rel#usermin/}"
+					module="${module%%/*}"
+					if [ -n "$module" ]; then
+						base_rel="usermin/$module"
+					else
+						base_rel="usermin"
+					fi
+					;;
+				*)
+					base_rel="usermin"
+					;;
+			esac
+		else
+			base_rel="$project_root"
+		fi
+
+		# Example:
+		#   base_rel    = webmin/mysql
+		#   source_rel  = webmin/mysql/lang/en
+		#   rel_to_base = lang/en
+		rel_to_base="${source_rel#$base_rel/}"
+
+		# Only adjust if we actually stripped the prefix and still
+		# have a subdirectory part.
+		if [ "$rel_to_base" != "$source_rel" ] && [[ "$rel_to_base" == */* ]]; then
+			# If the local source is a directory, mirror the full path;
+			# if it's a file, mirror just its parent directory.
 			if [ -d "$git_home/$source_rel" ]; then
-				rel_subdir="$rel_in_repo"
+				rel_subdir="$rel_to_base"
 			else
-				rel_subdir="${rel_in_repo%/*}"
+				rel_subdir="${rel_to_base%/*}"
 			fi
 
 			if [ -n "$rel_subdir" ]; then
