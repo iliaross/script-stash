@@ -734,6 +734,12 @@ process_host() {
 		fi
 	fi
 
+	# Virtualmin shop
+	if [ "$project_root" = "shop.virtualmin.com" ]; then
+		projectroottarget="virtualmin"
+		target="home/$projectroottarget"
+		user="virtualmin"
+	fi
 
 	# For single-file/path syncs, mirror the subdirectory layout
 	# inside the repo on the remote side.
@@ -874,12 +880,6 @@ process_host() {
 		else
 			target="usr/share/$projectroottarget"
 		fi
-	fi
-
-	if [ "$project_root" = "shop.virtualmin.com" ]; then
-		projectroottarget="${projectroottarget/webmin\/shop.virtualmin\.com/virtualmin}"
-		target="home/$projectroottarget"
-		user="virtualmin"
 	fi
 
 	if printf '%s\n' "$server" | grep -q 'build'; then
