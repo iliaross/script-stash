@@ -22,6 +22,9 @@ problem-solving. This is my personal toolbox of utilities I built over time.
   in the `~/.age` directory. Supports listing available recipient keys, encrypting
   for all or specific recipients, and decrypting with default or specified private
   keys.
+- **gh-update-mentions.bash**  
+  Replaces an old GitHub username with a new one in issue and pull request
+  bodies and comments across all repositories using the GitHub CLI.
 - **hosts-update-segment.bash**  
   Recreates `/etc/hosts` entries for a specific segment block based on the
   template while keeping the rest of the file unchanged and saving a backup
