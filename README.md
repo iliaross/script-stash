@@ -19,8 +19,9 @@ problem-solving. This is my personal toolbox of utilities I built over time.
 
 - **age.bash**  
   Encrypts and decrypts files using `age` with SSH public key recipients found
-  in the `~/.age` directory. Supports listing available recipient keys, encrypting
-  for all or specific recipients, and decrypting with default or specified private
+  in the `~/.age` directory. Supports listing available recipient keys,
+  encrypting for all or specific recipients, and decrypting with default or
+  specified private
   keys.
 - **apache-log-stats.bash**  
   Streaming parser for Apache access and error logs. Extracts top IPs, URLs,
