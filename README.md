@@ -22,6 +22,12 @@ problem-solving. This is my personal toolbox of utilities I built over time.
   in the `~/.age` directory. Supports listing available recipient keys, encrypting
   for all or specific recipients, and decrypting with default or specified private
   keys.
+- **apache-log-stats.bash**  
+  Streaming parser for Apache access and error logs. Extracts top IPs, URLs,
+  status codes, methods, 404s, 5xx errors, busiest hours, and bandwidth stats.
+  Supports rotated `.gz`/`.tar.gz` files, multiple inputs, optional GeoIP
+  lookups, and progress meter. Lite mode for fast analysis, full mode for
+  UA/referrer tables.
 - **gh-update-mentions.bash**  
   Replaces an old GitHub username with a new one in issue and pull request
   bodies and comments across all repositories using the GitHub CLI.
