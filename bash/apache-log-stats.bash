@@ -231,6 +231,8 @@ usage() {
 	  -n, --number         Number of rows to show (default: 25)
 
 	  -R, --rotated [n]    Include rotated siblings per input:
+	                        -R      include all rotated logs
+	                        -R n    include newest n rotated logs
 
 	      --strip-query    Drop query from URLs
 	      --full           Show heavy tables (URL-as-is, UA, referrer)
