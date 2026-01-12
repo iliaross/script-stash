@@ -1034,6 +1034,11 @@ main() {
 		shift
 	done
 
+	# Auto-enable progress only for interactive runs
+	if [ "$show_progress" -eq 0 ] && [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+		show_progress=1
+	fi
+
 	[ "${#inputs[@]}" -eq 0 ] && usage
 
 	need_cmd gzip
