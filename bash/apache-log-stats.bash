@@ -543,27 +543,36 @@ function print_table(title, arr, n,   k,c,i) {
 
 	ips[ip]++
 
-	# Track min/max timestamp seen for a correct time span
+	# Track min/max timestamp using a cheap sortable key
 	if (t0 != "" && tz0 != "") {
-		ep = epoch_from_timepair(t0, tz0)
-		if (ep > 0) {
-			if (min_ep == 0 || ep < min_ep) {
-				min_ep = ep
-				min_ts = t0 " " tz0
-			}
-			if (max_ep == 0 || ep > max_ep) {
-				max_ep = ep
-				max_ts = t0 " " tz0
-			}
-		}
-	
-		# Keep busiest hour stats as before
 		tt = t0
 		gsub(/^\[/, "", tt)
+	
 		split(tt, a, ":")
 		split(a[1], dmy, "/")
+	
+		dd = sprintf("%02d", dmy[1] + 0)
 		mon = mon_num(dmy[2])
-		hour = sprintf("%s-%02d-%02d %02d", dmy[3], mon, dmy[1], a[2])
+		yy = dmy[3] + 0
+		hh = a[2] + 0
+		mi = a[3] + 0
+		ss = a[4]
+		sub(/[^0-9].*$/, "", ss)
+		ss = ss + 0
+	
+		key = sprintf("%04d%02d%02d%02d%02d%02d", yy, mon, dd, hh, mi, ss)
+	
+		if (min_key == "" || key < min_key) {
+			min_key = key
+			min_ts = t0 " " tz0
+		}
+		if (max_key == "" || key > max_key) {
+			max_key = key
+			max_ts = t0 " " tz0
+		}
+	
+		# Keep busiest hour stats
+		hour = sprintf("%04d-%02d-%02d %02d", yy, mon, dd, hh)
 		per_hour[hour]++
 	}
 
@@ -635,8 +644,14 @@ END {
 	printf "  Unique URLs:       %s\n", hn(uuri)
 	printf "  Bytes sent:        %s\n", hb(total_bytes)
 
-	# Derive a simple req/sec estimate from first/last timestamps
-	if (min_ep > 0 && max_ep > 0) {
+	# Derive a simple req/sec estimate from min/max timestamps
+	if (min_ts != "" && max_ts != "") {
+		split(min_ts, m, " ")
+		split(max_ts, x, " ")
+	
+		min_ep = epoch_from_timepair(m[1], m[2])
+		max_ep = epoch_from_timepair(x[1], x[2])
+	
 		t1 = min_ts
 		t2 = max_ts
 		gsub(/^\[/, "", t1); gsub(/\]$/, "", t1)
