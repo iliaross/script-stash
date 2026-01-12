@@ -825,7 +825,11 @@ geoip2_db_file() {
 		return
 	fi
 
-	for f in /usr/share/GeoIP/*.mmdb /var/lib/GeoIP/*.mmdb; do
+	for f in \
+		/usr/share/geoip/*.mmdb \
+		/usr/share/GeoIP/*.mmdb \
+		/var/lib/GeoIP/*.mmdb
+	do
 		if [ -r "$f" ] && [[ "$f" == *Country*.mmdb ]]; then
 			printf '%s' "$f"
 			return
