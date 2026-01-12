@@ -706,6 +706,53 @@ END {
 '
 }
 
+geoip2_db_file() {
+	if [ -n "${GEOIP_DB:-}" ] && [ -r "$GEOIP_DB" ]; then
+		printf '%s' "$GEOIP_DB"
+		return
+	fi
+
+	# Common path on EL systems
+	local f="/usr/share/GeoIP/GeoLite2-Country.mmdb"
+	if [ -r "$f" ]; then
+		printf '%s' "$f"
+		return
+	fi
+
+	for f in /usr/share/GeoIP/*.mmdb /var/lib/GeoIP/*.mmdb; do
+		if [ -r "$f" ] && [[ "$f" == *Country*.mmdb ]]; then
+			printf '%s' "$f"
+			return
+		fi
+	done
+
+	printf ''
+}
+
+mmdb_first_string() {
+	# Reads mmdblookup output from stdin, prints the first quoted string
+	# Example output line: "US" <utf8_string>
+	awk -F'"' 'NF>=2 {print $2; exit}'
+}
+
+geoip2_lookup_ip() {
+	local ip="$1"
+	local db
+	db=$(geoip2_db_file)
+	if [ -z "$db" ] || ! have_cmd mmdblookup; then
+		printf '??\tUnknown'
+		return
+	fi
+
+	local cc name
+	cc=$(mmdblookup --file "$db" --ip "$ip" country iso_code 2>/dev/null | mmdb_first_string || true)
+	name=$(mmdblookup --file "$db" --ip "$ip" country names en 2>/dev/null | mmdb_first_string || true)
+
+	[ -z "$cc" ] && cc="??"
+	[ -z "$name" ] && name="Unknown"
+	printf '%s\t%s' "$cc" "$name"
+}
+
 geoip_parse() {
 	local out="$1"
 	out=${out#*: }
@@ -723,26 +770,35 @@ geoip_lookup_ip() {
 	local ip="$1"
 	local out=""
 
+	# Prefer legacy GeoIP if present
 	if [[ "$ip" == *:* ]] && have_cmd geoiplookup6; then
 		out=$(geoiplookup6 "$ip" 2>/dev/null || true)
 	elif have_cmd geoiplookup; then
 		out=$(geoiplookup "$ip" 2>/dev/null || true)
 	fi
 
-	if [ -z "$out" ]; then
-		printf '??\tUnknown'
+	if [ -n "$out" ]; then
+		geoip_parse "$out"
 		return
 	fi
 
-	geoip_parse "$out"
+	# Fallback: GeoIP2 / MaxMind MMDB
+	geoip2_lookup_ip "$ip"
 }
 
 print_geoip_sections() {
 	local meta_file="$1"
 
+	# Accept either legacy GeoIP OR GeoIP2 (mmdblookup + db)
 	if ! have_cmd geoiplookup && ! have_cmd geoiplookup6; then
-		return
+		if ! have_cmd mmdblookup; then
+			return
+		fi
+		if [ -z "$(geoip2_db_file)" ]; then
+			return
+		fi
 	fi
+
 	[ ! -s "$meta_file" ] && return
 
 	declare -A GEO_CC
@@ -986,7 +1042,9 @@ main() {
 	fi
 
 	local geoip_possible=0
-	if [ "$geoip_disabled" -eq 0 ] && ( have_cmd geoiplookup || have_cmd geoiplookup6 ); then
+	if [ "$geoip_disabled" -eq 0 ] && (
+		have_cmd geoiplookup || have_cmd geoiplookup6 || ( have_cmd mmdblookup && [ -n "$(geoip2_db_file)" ] )
+	); then
 		geoip_possible=1
 	fi
 	printf "GeoIP:       %s\n\n" "$(color cyan "$geoip_possible")"
