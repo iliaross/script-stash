@@ -541,11 +541,21 @@ function print_table(title, arr, n,   k,c,i) {
 
 	ips[ip]++
 
-	# Keep first/last timestamp seen for a simple time span estimate
+	# Track min/max timestamp seen for a correct time span
 	if (t0 != "" && tz0 != "") {
-		if (first_ts == "") first_ts = t0 " " tz0
-		last_ts = t0 " " tz0
-
+		ep = epoch_from_timepair(t0, tz0)
+		if (ep > 0) {
+			if (min_ep == 0 || ep < min_ep) {
+				min_ep = ep
+				min_ts = t0 " " tz0
+			}
+			if (max_ep == 0 || ep > max_ep) {
+				max_ep = ep
+				max_ts = t0 " " tz0
+			}
+		}
+	
+		# Keep busiest hour stats as before
 		tt = t0
 		gsub(/^\[/, "", tt)
 		split(tt, a, ":")
@@ -624,21 +634,16 @@ END {
 	printf "  Bytes sent:        %s\n", hb(total_bytes)
 
 	# Derive a simple req/sec estimate from first/last timestamps
-	if (first_ts != "" && last_ts != "") {
-		split(first_ts, fts, " ")
-		split(last_ts, lts, " ")
-		min_ep = epoch_from_timepair(fts[1], fts[2])
-		max_ep = epoch_from_timepair(lts[1], lts[2])
-
-		t1 = first_ts
-		t2 = last_ts
+	if (min_ep > 0 && max_ep > 0) {
+		t1 = min_ts
+		t2 = max_ts
 		gsub(/^\[/, "", t1); gsub(/\]$/, "", t1)
 		gsub(/^\[/, "", t2); gsub(/\]$/, "", t2)
-
+	
 		span = max_ep - min_ep
 		if (span < 1) span = 1
 		rps = total / span
-
+	
 		printf "  Time span:         %s — %s\n", t1, t2
 		printf "  Avg req/sec:       %.2f\n", rps
 	}
