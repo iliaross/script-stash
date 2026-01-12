@@ -1078,11 +1078,9 @@ main() {
 	fi
 
 	# In access lite mode, default to stripping query unless user asked
-	local strip_auto=0
 	if [ "$type" = "access" ] && [ "$full" -eq 0 ] \
 		&& [ "$strip_query" -eq 0 ]; then
 		strip_query=1
-		strip_auto=1
 	fi
 
 	# Build final file list in input order, then add rotated siblings per
