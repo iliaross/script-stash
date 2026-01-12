@@ -23,7 +23,7 @@ problem-solving. This is my personal toolbox of utilities I built over time.
   encrypting for all or specific recipients, and decrypting with default or
   specified private
   keys.
-- **apache-log-stats.bash**  
+- **apache-log-stats.bash** [ &#x26D3; ](https://forum.virtualmin.com/t/fast-apache-access-and-error-log-analyzer-with-rotated-logs-geoip/136282?u=ilia)  
   Streaming parser for Apache access and error logs. Extracts top IPs, URLs,
   status codes, methods, 404s, 5xx errors, busiest hours, and bandwidth stats.
   Supports rotated `.gz`/`.tar.gz` files, multiple inputs, optional GeoIP
