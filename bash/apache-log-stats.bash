@@ -1158,21 +1158,19 @@ main() {
 	elif [ "$rotated_depth" -eq -1 ]; then
 		printf "Rotated:     %s\n" "$(color cyan "all")"
 	else
-		local file_label="file"
-		[ "$rotated_depth" -gt 1 ] && file_label="files"
-		printf "Rotated:     %s\n" "$(color cyan "yes, $rotated_depth $file_label")"
+		printf "Rotated:     %s\n" "$(color cyan "yes (newest $rotated_depth)")"
 	fi
-	local strip_desc="disabled"
-	if [ "$strip_query" -eq 1 ]; then
-		strip_desc="enabled"
+	local progress_desc="disabled"
+	if [ "$show_progress" -eq 1 ]; then
+		progress_desc="enabled"
 	fi
-	printf "Progress:    %s\n" "$(color cyan "$strip_desc")"
+	printf "Progress:    %s\n" "$(color cyan "$progress_desc")"
 
 	if [ "$type" = "access" ]; then
 		if [ "$strip_query" -eq 1 ]; then
-			printf "Query:       %s\n" "$(color cyan "no")"
+			printf "Query:       %s\n" "$(color cyan "stripped")"
 		else
-			printf "Query:       %s\n" "$(color cyan "yes")"
+			printf "Query:       %s\n" "$(color cyan "kept")"
 		fi
 
 		printf "Mode:        %s\n" \
