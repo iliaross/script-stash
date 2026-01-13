@@ -409,31 +409,84 @@ format_marked_output() {
 	done
 }
 
-# Optional progress meter for large logs; prefers pv (pretty), else uses a small
+# Optional progress meter for large logs; prefers pv (pretty), else uses proper
 # gawk counter
 progress_wrap() {
-	local every="${PROGRESS_EVERY:-500000}"
-
+	# pv is fast and already shows lines, time, rate, and a bar
 	if have_cmd pv; then
-		pv -l -i 1 -B 4m
+		pv -l -N lines -i 1 -B 4m
+		# Move the cursor to a fresh line before report output starts
 		printf '\n' >&2
 		return
 	fi
 
-	gawk -v EVERY="$every" '
-	{
-		c++
-		if (c % EVERY == 0) {
-			printf "\r%s lines...", c > "/dev/stderr"
-		}
-		print
+	# Fallback progress meter implemented in gawk
+	# Prints one update per second and streams all input unchanged
+	gawk '
+# Format numbers like 869, 10.2k, 2.2M
+function human(n,   s) {
+	if (n < 1000) return n ""
+	if (n < 1000000) s = sprintf("%.1fk", n/1000.0)
+	else if (n < 1000000000) s = sprintf("%.1fM", n/1000000.0)
+	else s = sprintf("%.1fG", n/1000000000.0)
+	if (s ~ /\.0[kMG]$/) sub(/\.0/, "", s)
+	return s
+}
+
+# Format seconds as m:ss or h:mm:ss
+function hms(sec,   h,m,s) {
+	h = int(sec / 3600)
+	m = int((sec % 3600) / 60)
+	s = int(sec % 60)
+	if (h > 0) return sprintf("%d:%02d:%02d", h, m, s)
+	return sprintf("%d:%02d", m, s)
+}
+
+BEGIN {
+	# Track start time and last update time
+	start = systime()
+	last = start
+	lastc = 0
+}
+
+{
+	# Pass through input unchanged
+	c++
+	print
+
+	# Update once per second (keeps overhead low)
+	now = systime()
+	if (now != last) {
+		dt = now - last
+		if (dt < 1) dt = 1
+
+		# Rate over the last second window
+		rate = (c - lastc) / dt
+		el = now - start
+
+		# \r rewrites the same terminal line
+		printf "\rLines: %-8s  Time: %-6s  Rate: %-8s", \
+			human(c), hms(el), human(rate) "/s" > "/dev/stderr"
+
+		last = now
+		lastc = c
 	}
-	END {
-		if (c > 0) {
-			printf "\r%s lines...\n", c > "/dev/stderr"
-		}
-	}
-	'
+}
+
+END {
+	# Final summary line plus an extra blank line
+	now = systime()
+	el = now - start
+	if (el < 1) el = 1
+	rate = c / el
+
+	printf "\rLines: %-8s  Time: %-6s  Rate: %-8s\n\n", \
+		human(c), hms(el), human(rate) "/s" > "/dev/stderr"
+
+	# Make sure stderr is flushed before the report starts
+	fflush("/dev/stderr")
+}
+'
 }
 
 # Parse Apache access logs and emit report text with @@ markers; writes a meta
