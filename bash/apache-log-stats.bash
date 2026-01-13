@@ -676,7 +676,8 @@ END {
 	emit_top_ips(ips, TOP)
 
 	print_table("Top URLs", uris, TOP)
-	if (FULL == 1) print_table("Top URLs (as-is)", uris_full, TOP)
+	if (FULL == 1 && STRIPQ == 1)
+		print_table("Top URLs (as-is)", uris_full, TOP)
 
 	print_table("Top status codes", statuses, TOP)
 
