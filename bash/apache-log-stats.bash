@@ -589,6 +589,13 @@ function print_table(title, arr, n,   k,c,i) {
 	uri = uri_full
 	if (STRIPQ == 1) sub(/\?.*$/, "", uri)
 
+	# Normalize leading slashes: //path -> /path
+	sub(/^\/+/, "/", uri)
+	
+	# Normalize trailing slash (except for root "/")
+	if (uri != "/") sub(/\/+$/, "", uri)
+	if (FULL == 1 && uri_full != "/") sub(/\/+$/, "", uri_full)
+
 	# Parse status and bytes from the post-request chunk
 	status = "-"
 	bytes = 0
