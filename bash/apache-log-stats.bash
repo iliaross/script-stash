@@ -15,7 +15,7 @@
 #   ./apache-log-stats.bash -i <log-file> [options]
 #   ./apache-log-stats.bash -i <log-file> [-i <log-file> ...] [options]
 #   ./apache-log-stats.bash -i <log-file> -R [n]
-#   ./apache-log-stats.bash -i <log-file> --full --progress
+#   ./apache-log-stats.bash -i <log-file> --user-agents --progress
 #
 # Examples:
 #   # Parse access log (auto-detected)
@@ -28,14 +28,8 @@
 #   # Include only newest 3 rotated logs
 #   ./apache-log-stats.bash -i /var/log/virtualmin/site_access_log -R 3
 #
-#   # Full mode with progress meter
-#   ./apache-log-stats.bash -i /var/log/apache2/access.log --full --progress
-#
 #   # Parse error log explicitly
 #   ./apache-log-stats.bash -i /var/log/apache2/error.log -t error
-#
-#   # Strip query strings and show top 50
-#   ./apache-log-stats.bash -i /var/log/apache2/access.log --strip-query -n 50
 #
 #   # Disable GeoIP and colors (for scripting)
 #   ./apache-log-stats.bash -i /var/log/apache2/access.log --no-geoip --no-color
@@ -234,9 +228,8 @@ usage() {
 	                        -R      include all rotated logs
 	                        -R n    include newest n rotated logs
 
-	      --strip-query    Drop query from URLs
-	      --full           Show heavy tables (URL-as-is, UA, referrer)
-	      --progress       Progress meter to stderr (slower)
+	      --user-agents    Show user-agent stats (slower; default: off)
+	      --progress       Show progress meter (default: auto)
 	      --no-geoip       Disable GeoIP output
 	      --no-color       Disable colors
 	  -h, --help           Show help
@@ -493,18 +486,16 @@ END {
 # file with top IPs (count<tab>ip) for GeoIP lookup.
 run_access_stats() {
 	local top_n="$1"
-	local strip_query="$2"
-	local meta_file="$3"
-	local full="$4"
+	local meta_file="$2"
+	local with_uas="$3"
 
 	need_cmd gawk
 
 	# Use the C locale for faster regex and character classes
 	LC_ALL=C gawk \
 		-v TOP="$top_n" \
-		-v STRIPQ="$strip_query" \
 		-v META="$meta_file" \
-		-v FULL="$full" '
+		-v WITH_UA="$with_uas" '
 function trim_dot0(s) {
 	if (s ~ /\.0[kMGTP]$/) sub(/\.0/, "", s)
 	return s
@@ -569,7 +560,45 @@ function print_table(title, arr, n,   k,c,i) {
 		if (++i >= n) break
 	}
 	delete PROCINFO["sorted_in"]
-	if (i == 0) printf "  (none)\n"
+}
+function print_table_size(title, cnt, bytes, n,   k,c,i,b,lbl) {
+	printf "@@SUB@@ %s\n", title
+	i = 0
+	PROCINFO["sorted_in"] = "@val_num_desc"
+	for (k in cnt) {
+		c = cnt[k]
+		b = bytes[k] + 0
+		lbl = (b == 0 ? "redirected" : hb(b))
+		printf "  %8s  %s [%s]\n", hn(c), k, lbl
+		if (++i >= n) break
+	}
+	delete PROCINFO["sorted_in"]
+}
+function print_table_size_queryonly(title, cnt, bytes, n,   k,c,i,b,lbl) {
+	printf "@@SUB@@ %s\n", title
+	i = 0
+	PROCINFO["sorted_in"] = "@val_num_desc"
+	for (k in cnt) {
+		if (index(k, "?") == 0) continue
+		c = cnt[k]
+		b = bytes[k] + 0
+		lbl = (b == 0 ? "redirected" : hb(b))
+		printf "  %8s  %s [%s]\n", hn(c), k, lbl
+		if (++i >= n) break
+	}
+	delete PROCINFO["sorted_in"]
+}
+function print_table_by_size(title, cnt, bytes, n,   k,i,b,lbl) {
+	printf "@@SUB@@ %s\n", title
+	i = 0
+	PROCINFO["sorted_in"] = "@val_num_desc"
+	for (k in bytes) {
+		b = bytes[k] + 0
+		lbl = (b == 0 ? "redirected" : hb(b))
+		printf "  %8s  %s (%s)\n", lbl, k, hn(cnt[k])
+		if (++i >= n) break
+	}
+	delete PROCINFO["sorted_in"]
 }
 
 {
@@ -640,14 +669,15 @@ function print_table(title, arr, n,   k,c,i) {
 
 	# Optionally strip query part to reduce URL cardinality
 	uri = uri_full
-	if (STRIPQ == 1) sub(/\?.*$/, "", uri)
+	sub(/\?.*$/, "", uri)
 
 	# Normalize leading slashes: //path -> /path
 	sub(/^\/+/, "/", uri)
+	sub(/^\/+/, "/", uri_full)
 	
 	# Normalize trailing slash (except for root "/")
 	if (uri != "/") sub(/\/+$/, "", uri)
-	if (FULL == 1 && uri_full != "/") sub(/\/+$/, "", uri_full)
+	if (uri_full != "/") sub(/\/+$/, "", uri_full)
 
 	# Parse status and bytes from the post-request chunk
 	status = "-"
@@ -676,18 +706,25 @@ function print_table(title, arr, n,   k,c,i) {
 		if (bytes > max_bytes) max_bytes = bytes
 	}
 
-	# URL stats (always for stripped URL)
+	# URL stats
 	uris[uri]++
-	if (FULL == 1) uris_full[uri_full]++
+	url_b[uri] += bytes
+	uris_full[uri_full]++
+	url_full_b[uri_full] += bytes
 
-	if (status == "404") nf[uri]++
+	if (status == "404") {
+		nf[uri]++
+		nf_b[uri] += bytes
+	}
 	if (status ~ /^5/) sx[uri]++
 
-	# Heavy tables are full-mode only.
-	if (FULL == 1) {
-		ref = q[4]
+	# Referrers
+	ref = q[4]
+	if (ref != "" && ref != "-") refs[ref]++
+	
+	# User agents if enabled
+	if (WITH_UA == 1) {
 		ua = q[6]
-		if (ref != "" && ref != "-") refs[ref]++
 		if (ua != "" && ua != "-") uas[ua]++
 	}
 }
@@ -725,12 +762,24 @@ END {
 		printf "  Avg req/sec:       %.2f\n", rps
 	}
 
+	# Response size
+	if (total_bytes > 0 && count_bytes > 0) {
+		printf "@@SUB@@ Response size\n"
+		printf "  Total:   %s\n", hb(total_bytes)
+		printf "  Avg:     %s\n", hb(int(total_bytes / count_bytes))
+		printf "  Min:     %s\n", hb(min_bytes)
+		printf "  Max:     %s\n", hb(max_bytes)
+	}
+
+	print_table("Busiest hours", per_hour, (TOP < 12 ? TOP : 12))
+
 	print_table("Top IPs", ips, TOP)
 	emit_top_ips(ips, TOP)
+	print_table("Top IPs by bandwidth (bytes summed)", bytes_ip, TOP)
 
-	print_table("Top URLs", uris, TOP)
-	if (FULL == 1 && STRIPQ == 1)
-		print_table("Top URLs (as-is)", uris_full, TOP)
+	print_table_size("Top URLs by count", uris, url_b, TOP)
+	print_table_by_size("Top URLs by size", uris, url_b, TOP)
+	print_table_size_queryonly("Top URLs with query", uris_full, url_full_b, TOP)
 
 	print_table("Top status codes", statuses, TOP)
 
@@ -740,30 +789,28 @@ END {
 	delete PROCINFO["sorted_in"]
 
 	print_table("Top methods", methods, TOP)
-	print_table("Top 404 URLs", nf, TOP)
+	print_table_size("Top 404 URLs", nf, nf_b, TOP)
 	print_table("Top 5xx URLs", sx, TOP)
 
-	print_table("Busiest hours", per_hour, (TOP < 12 ? TOP : 12))
-	print_table("Top IPs by bandwidth (bytes summed)", bytes_ip, TOP)
-
-	printf "@@SUB@@ Response size\n"
-	printf "  Total:   %s\n", hb(total_bytes)
-	if (count_bytes > 0) {
-		printf "  Avg:     %s\n", hb(int(total_bytes / count_bytes))
-		printf "  Min:     %s\n", hb(min_bytes)
-		printf "  Max:     %s\n", hb(max_bytes)
-	}
-
-	if (FULL == 1) {
-		uua=0; for (k in uas) uua++
-		uref=0; for (k in refs) uref++
-
-		printf "\n@@SUB@@ Unique extra fields\n"
-		printf "  Unique UAs:        %s\n", hn(uua)
-		printf "  Unique referrers:  %s\n", hn(uref)
-
+	# Top referrers (always)
+	print_table("Top referrers", refs, TOP)
+	
+	# Top user-agents (only if enabled)
+	if (WITH_UA == 1)
 		print_table("Top user-agents", uas, TOP)
-		print_table("Top referrers", refs, TOP)
+	
+	# Unique counts (always printed last)
+	if (WITH_UA == 1)
+		printf "\n@@SUB@@ Unique referrers and user-agents\n"
+	else
+		printf "\n@@SUB@@ Unique referrers\n"
+	
+	uref=0; for (k in refs) uref++
+	printf "  Unique referrers:  %s\n", hn(uref)
+	
+	if (WITH_UA == 1) {
+		uua=0; for (k in uas) uua++
+		printf "  Unique user-agents: %s\n", hn(uua)
 	}
 }
 '
@@ -820,7 +867,6 @@ function print_table(title, arr, n,   k,c,i) {
 		if (++i >= n) break
 	}
 	delete PROCINFO["sorted_in"]
-	if (i == 0) printf "  (none)\n"
 }
 
 {
@@ -1060,10 +1106,9 @@ main() {
 	local type="auto"
 	local number=25
 	local rotated_depth=0
-	local strip_query=0
 	local show_progress=0
 	local geoip_disabled=0
-	local full=0
+	local with_uas=0
 
 	local -a inputs=()
 
@@ -1093,11 +1138,8 @@ main() {
 					rotated_depth=-1
 				fi
 				;;
-			--strip-query)
-				strip_query=1
-				;;
-			--full)
-				full=1
+			--user-agents)
+				with_uas=1
 				;;
 			--progress)
 				show_progress=1
@@ -1164,12 +1206,6 @@ main() {
 		exit 1
 	fi
 
-	# In access lite mode, default to stripping query unless user asked
-	if [ "$type" = "access" ] && [ "$full" -eq 0 ] \
-		&& [ "$strip_query" -eq 0 ]; then
-		strip_query=1
-	fi
-
 	# Build final file list in input order, then add rotated siblings per
 	# input
 	local -a files=()
@@ -1211,7 +1247,7 @@ main() {
 
 	section "Apache log stats"
 	printf "Type:        %s\n" "$(color cyan "$type")"
-	printf "Top number:  %s\n" "$(color cyan "$number")"
+	printf "Top entries: %s\n" "$(color cyan "$number")"
 	printf "Inputs:      %s\n" "$(color cyan "${#inputs[@]}")"
 
 	if [ "$rotated_depth" -eq 0 ]; then
@@ -1228,14 +1264,11 @@ main() {
 	printf "Progress:    %s\n" "$(color cyan "$progress_desc")"
 
 	if [ "$type" = "access" ]; then
-		if [ "$strip_query" -eq 1 ]; then
-			printf "Query:       %s\n" "$(color cyan "stripped")"
-		else
-			printf "Query:       %s\n" "$(color cyan "kept")"
+		local ua_desc="disabled"
+		if [ "$with_uas" -eq 1 ]; then
+			ua_desc="enabled"
 		fi
-
-		printf "Mode:        %s\n" \
-			"$(color cyan "$( [ "$full" -eq 1 ] && echo full || echo lite )")"
+		printf "User agents: %s\n" "$(color cyan "$ua_desc")"
 	fi
 
 	# GeoIP can work via geoiplookup or via mmdblookup+db
@@ -1246,10 +1279,14 @@ main() {
 	); then
 		geoip_possible=1
 	fi
-	local geoip_desc="disabled"
-	if [ "$geoip_possible" -eq 1 ]; then
+	
+	local geoip_desc="not available"
+	if [ "$geoip_disabled" -eq 1 ]; then
+		geoip_desc="disabled"
+	elif [ "$geoip_possible" -eq 1 ]; then
 		geoip_desc="enabled"
 	fi
+	
 	printf "GeoIP:       %s\n\n" "$(color cyan "$geoip_desc")"
 
 	print_file_list "${files[@]}"
@@ -1270,8 +1307,7 @@ main() {
 				else
 					cat
 				fi
-			} | run_access_stats \
-				"$number" "$strip_query" "$meta_top_ips" "$full" \
+			} | run_access_stats "$number" "$meta_top_ips" "$with_uas" \
 			| format_marked_output
 	else
 		(
