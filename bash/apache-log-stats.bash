@@ -150,6 +150,63 @@ file_size() {
 	fi
 }
 
+# Best-effort uncompressed size for compressed files, without full
+# decompression; returns empty if unknown
+file_uncompressed_size() {
+	local f="$1"
+
+	# .gz (also works for gzip-compressed tar archives like .tar.gz and .tgz)
+	if [[ "$f" =~ \.gz$|\.tgz$ ]]; then
+		local csz isz
+		csz=$(file_size "$f" 2>/dev/null || printf '0')
+
+		isz=$(
+			tail -c 4 "$f" 2>/dev/null \
+				| od -An -tu4 -N4 2>/dev/null \
+				| awk '{print $1}'
+		)
+
+		# gzip footer size wraps at 2^32, so "un-wrap" if it looks
+		# wrapped; for logs, uncompressed should not be smaller than
+		# compressed
+		if [ -n "$isz" ] && [ "$isz" -gt 0 ] && [ "$csz" -gt 0 ] \
+			&& [ "$isz" -lt "$csz" ]
+		then
+			local wrap=4294967296
+			local i=0
+			while [ "$isz" -lt "$csz" ] && [ "$i" -lt 16 ]; do
+				isz=$(( isz + wrap ))
+				i=$(( i + 1 ))
+			done
+		fi
+
+		printf '%s' "${isz:-}"
+		return
+	fi
+
+	# .xz / .txz: use machine-readable output, grab "totals" uncompressed bytes
+	if [[ "$f" =~ \.xz$|\.txz$ ]] && have_cmd xz; then
+		xz --robot -l "$f" 2>/dev/null \
+			| awk -F'\t' '$1=="totals" {print $5; exit}'
+		return
+	fi
+
+	# zip: unzip -l summary line
+	if [[ "$f" =~ \.zip$ ]] && have_cmd unzip; then
+		unzip -l "$f" 2>/dev/null | awk '
+			{
+				v=$1; gsub(/,/, "", v)
+				if (v ~ /^[0-9]+$/ && ($NF=="file" || $NF=="files")) {
+					print v; exit
+				}
+			}
+		'
+		return
+	fi
+
+	printf ''
+}
+
 # Get file mtime as a readable timestamp, portable across GNU/BSD stat
 file_mtime() {
 	local file="$1"
@@ -260,8 +317,22 @@ guess_type_from_content() {
 
 	if [[ "$f" =~ \.tar\.gz$|\.tgz$ ]]; then
 		line=$(tar -xOzf "$f" 2>/dev/null | head -n1 || true)
+	elif [[ "$f" =~ \.tar\.bz2$|\.tbz2$ ]]; then
+		line=$(tar -xOjf "$f" 2>/dev/null | head -n1 || true)
+	elif [[ "$f" =~ \.tar\.xz$|\.txz$ ]]; then
+		line=$(tar -xOJf "$f" 2>/dev/null | head -n1 || true)
+	elif [[ "$f" =~ \.tar\.zst$|\.tzst$ ]] && tar --help 2>/dev/null | grep -q -- '--zstd'; then
+		line=$(tar --zstd -xOf "$f" 2>/dev/null | head -n1 || true)
 	elif [[ "$f" =~ \.gz$ ]]; then
 		line=$(gzip -cd "$f" 2>/dev/null | head -n1 || true)
+	elif [[ "$f" =~ \.bz2$ ]] && have_cmd bzip2; then
+		line=$(bzip2 -dc "$f" 2>/dev/null | head -n1 || true)
+	elif [[ "$f" =~ \.xz$ ]] && have_cmd xz; then
+		line=$(xz -dc "$f" 2>/dev/null | head -n1 || true)
+	elif [[ "$f" =~ \.zst$ ]] && have_cmd zstd; then
+		line=$(zstd -dc "$f" 2>/dev/null | head -n1 || true)
+	elif [[ "$f" =~ \.zip$ ]] && have_cmd unzip; then
+		line=$(unzip -p "$f" 2>/dev/null | head -n1 || true)
 	else
 		line=$(head -n1 "$f" 2>/dev/null || true)
 	fi
@@ -352,52 +423,151 @@ collect_files_for_input() {
 stream_file() {
 	local f="$1"
 
+	# tar archives
 	if [[ "$f" =~ \.tar\.gz$|\.tgz$ ]]; then
 		if have_cmd pigz; then
-			tar --use-compress-program=pigz -xOf "$f" \
-				2>/dev/null || true
+			tar --use-compress-program=pigz -xOf "$f" 2>/dev/null
 		else
-			tar -xOzf "$f" 2>/dev/null || true
+			tar -xOzf "$f" 2>/dev/null
 		fi
 		return
 	fi
 
+	if [[ "$f" =~ \.tar\.bz2$|\.tbz2$ ]]; then
+		tar -xOjf "$f" 2>/dev/null
+		return
+	fi
+
+	if [[ "$f" =~ \.tar\.xz$|\.txz$ ]]; then
+		tar -xOJf "$f" 2>/dev/null
+		return
+	fi
+
+	if [[ "$f" =~ \.tar\.zst$|\.tzst$ ]]; then
+		if tar --help 2>/dev/null | grep -q -- '--zstd'; then
+			tar --zstd -xOf "$f" 2>/dev/null
+		elif have_cmd zstd; then
+			zstd -dc "$f" 2>/dev/null | tar -xOf - 2>/dev/null
+		fi
+		return
+	fi
+
+	# single-file compression
 	if [[ "$f" =~ \.gz$ ]]; then
 		if have_cmd pigz; then
-			pigz -dc "$f" 2>/dev/null || true
+			pigz -dc "$f" 2>/dev/null
 		else
-			gzip -cd "$f" 2>/dev/null || true
+			gzip -cd "$f" 2>/dev/null
 		fi
 		return
 	fi
 
-	cat "$f" 2>/dev/null || true
+	if [[ "$f" =~ \.bz2$ ]]; then
+		bzip2 -dc "$f" 2>/dev/null
+		return
+	fi
+
+	if [[ "$f" =~ \.xz$ ]]; then
+		xz -dc "$f" 2>/dev/null
+		return
+	fi
+
+	if [[ "$f" =~ \.zst$ ]]; then
+		zstd -dc "$f" 2>/dev/null
+		return
+	fi
+
+	if [[ "$f" =~ \.zip$ ]]; then
+		unzip -p "$f" 2>/dev/null
+		return
+	fi
+
+	# plain (including .1 from delaycompress)
+	cat "$f" 2>/dev/null
 }
 
-# Print input files with sizes and mtimes, plus a total on-disk size
+# Print a list of input logs with sizes and mtimes; plain logs show a single
+# size on disk, whereas compressed logs show uncompressed size on the left only
+# if known, and on-disk size in brackets on the right
 print_file_list() {
 	local -a files=("$@")
 	local total_disk=0
-	local f sz
+	local total_un=0
+	local un_partial=0
+	local saw_comp=0
+
+	local f sz usz shown left right
 
 	section "Input files"
 	for f in "${files[@]}"; do
-		if [ -f "$f" ]; then
-			sz=$(file_size "$f" || printf '0')
-			total_disk=$(( total_disk + sz ))
-			printf "  %s  %s  %s\n" \
-				"$(pad_color 8 cyan "$(human_bytes "$sz")")" \
-				"$(color dim "$(file_mtime "$f")")" \
-				"$(color dim "$(basename "$f")")"
-		else
+		shown=$(basename "$f")
+
+		if [ ! -f "$f" ]; then
 			printf "  %s  %s\n" \
 				"$(color yellow "(missing)")" \
-				"$(color dim "$(basename "$f")")"
+				"$(color dim "$shown")"
+			continue
+		fi
+
+		sz=$(file_size "$f" || printf '0')
+		total_disk=$(( total_disk + sz ))
+		right=""
+
+		# Known compressed extensions; everything else is treated as plain
+		if [[ "$f" =~ \.(gz|bz2|xz|zst|zip|tgz|tbz2|txz|tzst)$ ]] \
+			|| [[ "$f" =~ \.tar\.(gz|bz2|xz|zst)$ ]]
+		then
+			saw_comp=1
+			usz=$(file_uncompressed_size "$f" 2>/dev/null || true)
+
+			# Only show uncompressed size if it is a positive integer
+			left=""
+			if [[ "${usz:-}" =~ ^[0-9]+$ ]] && [ "$usz" -gt 0 ]; then
+				left=$(human_bytes "$usz")
+				total_un=$(( total_un + usz ))
+			else
+				un_partial=1
+			fi
+
+			right="[$(human_bytes "$sz")]"
+
+			printf "  %s  %s  %s %s\n" \
+				"$(pad_color 8 cyan "$left")" \
+				"$(color dim "$(file_mtime "$f")")" \
+				"$(color dim "$shown")" \
+				"$(color dim "$right")"
+		else
+			# Plain file: uncompressed == on-disk
+			left=$(human_bytes "$sz")
+			total_un=$(( total_un + sz ))
+
+			printf "  %s  %s  %s\n" \
+				"$(pad_color 8 cyan "$left")" \
+				"$(color dim "$(file_mtime "$f")")" \
+				"$(color dim "$shown")"
 		fi
 	done
 
-	printf "\nTotal on disk: %s\n\n" \
-		"$(color green "$(human_bytes "$total_disk")")"
+	# Totals: always show on-disk, optionally show raw total in brackets
+	local disk_txt raw_txt
+	disk_txt=$(human_bytes "$total_disk")
+	
+	if [ "$saw_comp" -eq 1 ] && [ "$total_un" -gt 0 ]; then
+		raw_txt=$(human_bytes "$total_un")
+		if [ "$un_partial" -eq 1 ]; then
+			printf "\nTotal: %s [%s] (partial)\n\n" \
+				"$(color green "$disk_txt")" \
+				"$(color dim "$raw_txt")"
+		else
+			printf "\nTotal: %s [%s]\n\n" \
+				"$(color green "$disk_txt")" \
+				"$(color dim "$raw_txt")"
+		fi
+	else
+		printf "\nTotal: %s\n\n" "$(color green "$disk_txt")"
+	fi
+
+	printf "\n"
 }
 
 # Translate @@SECTION@@ / @@SUB@@ markers into nice output
@@ -1246,10 +1416,20 @@ main() {
 	# tar is needed only if we actually see tarballs
 	local f
 	for f in "${files[@]}"; do
-		if [[ "$f" =~ \.tar\.gz$|\.tgz$ ]]; then
+		if [[ "$f" =~ \.tar\.(gz|bz2|xz|zst)$|\.t(gz|bz2|xz|zst)$ ]]; then
 			need_cmd tar
 			break
 		fi
+	done
+
+	# Require decompress tools only if we are going to read those formats
+	for f in "${files[@]}"; do
+		case "$f" in
+			*.bz2|*.tbz2|*.tar.bz2) need_cmd bzip2 ;;
+			*.xz|*.txz|*.tar.xz)    need_cmd xz ;;
+			*.zst|*.tzst|*.tar.zst) need_cmd zstd ;;
+			*.zip)                  need_cmd unzip ;;
+		esac
 	done
 
 	# Use a temp dir for small meta files (top IP list and line count)
