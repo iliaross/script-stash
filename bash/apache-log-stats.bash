@@ -299,7 +299,22 @@ collect_files_for_input() {
 	base=$(basename "$input")
 
 	local -a rotated=()
-	for f in "$dir/$base"-*.gz "$dir/$base"-*.tar.gz "$dir/$base"-*.tgz; do
+	for f in \
+		"$dir/$base"-*.gz \
+		"$dir/$base"-*.bz2 \
+		"$dir/$base"-*.xz \
+		"$dir/$base"-*.zst \
+		"$dir/$base"-*.zip \
+		"$dir/$base"-*.tar.gz \
+		"$dir/$base"-*.tgz \
+		"$dir/$base"-*.tar.bz2 \
+		"$dir/$base"-*.tbz2 \
+		"$dir/$base"-*.tar.xz \
+		"$dir/$base"-*.txz \
+		"$dir/$base"-*.tar.zst \
+		"$dir/$base"-*.tzst \
+		"$dir/$base".[0-9]*
+	do
 		[ -e "$f" ] && rotated+=("$f")
 	done
 
