@@ -448,8 +448,8 @@ show_file_diff() {
 	local origin_dir="$1" target_dir="$2" file="$3"
 
 	printf '\n%s\n' "$(color bold "━━━ $file ━━━")"
-	printf '%s\n' "$(color dim "--- origin: $file")"
-	printf '%s\n' "$(color dim "+++ target: $file")"
+	printf '%s\n' "$(color dim "--- old: $file")"
+	printf '%s\n' "$(color dim "+++ new: $file")"
 	printf '\n'
 
 	if [ "$DIFF_CMD" = "icdiff" ]; then
