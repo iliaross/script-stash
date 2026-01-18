@@ -21,8 +21,7 @@ problem-solving. This is my personal toolbox of utilities I built over time.
   Encrypts and decrypts files using `age` with SSH public key recipients found
   in the `~/.age` directory. Supports listing available recipient keys,
   encrypting for all or specific recipients, and decrypting with default or
-  specified private
-  keys.
+  specified private keys.
 - **apache-log-stats.bash** [ &#x26D3; ](https://forum.virtualmin.com/t/fast-apache-access-and-error-log-analyzer-with-rotated-logs-geoip/136282?u=ilia)  
   Streaming parser for Apache access and error logs. Extracts top IPs, URLs,
   status codes, methods, 404s, 5xx errors, busiest hours, and bandwidth stats.
@@ -45,6 +44,10 @@ problem-solving. This is my personal toolbox of utilities I built over time.
   Convenience wrapper around `ssh` to connect to `debug-*` hosts using short
   names, resolving the full hostname from `/etc/hosts` and reading the SSH
   password from an environment variable or standard input if needed.
+- **package-diff.bash**  
+  Compares two packages or archives (RPM, DEB, TAR), summarizing added, removed,
+  and changed files (including package scripts), with optional metadata,
+  side-by-side diffs, and the ability to skip diffing selected paths.
 
 ### Requirements
 
