@@ -416,6 +416,7 @@ is_whitespace_only_change() {
 is_excluded_file() {
 	local file="$1" pat
 	for pat in "${EXCLUDES[@]}"; do
+		# shellcheck disable=SC2254  # patterns are intentional globs
 		case "$file" in
 			$pat) return 0 ;;
 		esac
