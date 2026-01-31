@@ -581,6 +581,16 @@ fi
 projectroottarget="$project_root"
 projectroottarget_usermin=""
 
+# If the repo itself is a Webmin module (standalone module repo),
+# treat it as webmin/<module>. This covers repos like "nftables".
+if [ "$project_root" != "webmin" ] && [ "$project_root" != "usermin" ]; then
+	if [ -f "$git_home/$project_root/module.info" ] || \
+	   [ -f "$git_home/$project_root/module.info.dist" ] || \
+	   [ -d "$git_home/$project_root/lang" ]; then
+		projectroottarget="webmin/$project_root"
+	fi
+fi
+
 # Special handling for Webmin modules (e.g. webmin/xterm, webmin/filemin)
 if [ "$project_root" = "webmin" ]; then
 	case "$project_rel" in
