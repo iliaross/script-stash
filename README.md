@@ -28,6 +28,10 @@ problem-solving. This is my personal toolbox of utilities I built over time.
   Supports rotated `.gz`/`.tar.gz` files, multiple inputs, optional GeoIP
   lookups, and progress meter. Lite mode for fast analysis, full mode for
   UA/referrer tables.
+- **discourse-user-triage.bash**  
+  Builds a Discourse support triage report for a target user, including profile
+  details, recent activity, latest unique topics, optional same-IP correlation,
+  and AI-generated scoring/recommendations for prioritization.
 - **gh-update-mentions.bash**  
   Replaces an old GitHub username with a new one in issue and pull request
   bodies and comments across all repositories using the GitHub CLI.
