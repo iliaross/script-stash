@@ -264,14 +264,10 @@ else
 fi
 
 # Decide rsyncextraflags *after* we know the mode:
-# - full  : --no-links --existing (unless force)
-# - single: --no-links only       (unless force)
+# - full  : --no-links (unless force)
+# - single: --no-links (unless force)
 if [ "$arg4" != "force" ]; then
-	if [ "$mode_label" = "full" ]; then
-		rsyncextraflags="--no-links --existing"
-	else
-		rsyncextraflags="--no-links"
-	fi
+	rsyncextraflags="--no-links"
 elif [ "$project_root" = "usermin" ]; then
 	rsyncextraflags="--copy-links"
 fi
@@ -722,6 +718,7 @@ process_host() {
 
 	local target=""
 	local target_usermin=""
+	local single_rel_subdir=""
 
 	if [ "$freebsdwebmindir" -eq 1 ]; then
 		if printf '%s\n' "$project_root" | grep -qE 'webmin|usermin|authentic-theme|virtual-server|virtualmin-'; then
@@ -811,6 +808,7 @@ process_host() {
 			fi
 
 			if [ -n "$rel_subdir" ]; then
+				single_rel_subdir="$rel_subdir"
 				target="${target}/${rel_subdir}"
 				if [ -n "$target_usermin" ]; then
 					target_usermin="${target_usermin}/${rel_subdir}"
@@ -902,6 +900,17 @@ process_host() {
 		fi
 	fi
 
+	local target_project_parent="$target"
+	local target_project_parent_usermin="$target_usermin"
+	if [ "$mode_label" = "single" ] && [ -n "$single_rel_subdir" ]; then
+		if [ "${target%/$single_rel_subdir}" != "$target" ]; then
+			target_project_parent="${target%/$single_rel_subdir}"
+		fi
+		if [ -n "$target_usermin" ] && [ "${target_usermin%/$single_rel_subdir}" != "$target_usermin" ]; then
+			target_project_parent_usermin="${target_usermin%/$single_rel_subdir}"
+		fi
+	fi
+
 	local local_nohup_sshpass=""
 	if printf '%s\n' "$server_raw" | grep -q -- '-pubkey'; then
 		if printf '%s\n' "$server_raw" | grep -q 'cloud-'; then
@@ -921,9 +930,29 @@ process_host() {
 	local sourcefull="$git_home/$initial_source"
 	local targetfull="/$target"
 	local targetfull_usermin=""
+	local targetparentfull=""
+	local targetparentfull_usermin=""
 	if [ -n "$target_usermin" ]; then
 		targetfull_usermin="/$target_usermin"
 	fi
+	if [ "$mode_label" = "single" ]; then
+		targetparentfull="/$target_project_parent"
+		if [ -n "$target_project_parent_usermin" ]; then
+			targetparentfull_usermin="/$target_project_parent_usermin"
+		fi
+	fi
+
+	# In full mode we only sync projects that already exist remotely.
+	remote_dir_exists() {
+		local remote_path="$1"
+		local check_cmd=""
+		if printf '%s\n' "$local_sshnocheck" | grep -q ' -o PubkeyAuthentication=no'; then
+			check_cmd="$sshpass_cmd -p $password $ssh_cmd$local_sshport_opt -T $local_sshnocheck root@$ssh_host \"test -d '$remote_path'\""
+		else
+			check_cmd="$ssh_cmd$local_sshport_opt -T $local_sshnocheck root@$ssh_host \"test -d '$remote_path'\""
+		fi
+		eval "$check_cmd" >/dev/null 2>&1
+	}
 
 	# SSH-only commands
 	if [ -n "$sshcmd" ]; then
@@ -994,38 +1023,20 @@ process_host() {
 	fi
 
 	# Rsync sync
-	printf "\nSyncing to    : %s (Webmin)\n" "$(color cyan "$server")"
-	local cmdsync
-	cmdsync="${local_nohup_sshpass}${rsync_cmd} ${rsyncdefflags} ${rsyncextraflags} ${rsyncdefexcludeflags} -e \"$ssh_cmd$local_sshport_opt ${local_sshnocheck}\" \"$sourcefull\" $user@$ssh_host:\"$targetfull\"/"
-	local cmd_print="$cmdsync"
-	if [ -n "$password" ]; then
-		cmd_print="${cmd_print//$password/<password>}"
-	fi
-	printf "Command used  : %s\n" "$(color dim "$cmd_print")"
-
 	local rsync_output rsync_status short_err
-	rsync_output=$(eval "$cmdsync" 2>&1)
-	rsync_status=$?
+	local cmdsync cmd_print rsyncpathguard skipped_parent
 
-	if [ "$rsync_status" -eq 0 ]; then
-		printf "Status   : %s\n\n" "$(color green "Success")"
+	printf "\nSyncing to    : %s (Webmin)\n" "$(color cyan "$server")"
+	if [ "$mode_label" = "full" ] && ! remote_dir_exists "$targetfull"; then
+		printf "Status   : %s\n\n" "$(color yellow "Skipped: $targetfull does not exist on remote (full mode requires existing project directory).")"
 	else
-		short_err="$(
-			printf '%s\n' "$rsync_output" \
-			| "$sed_cmd" '/^[[:space:]]*$/d' \
-			| head -n 2 \
-			| tr '\n' '; ' \
-			| "$sed_cmd" 's/[;[:space:]]*$//'
-		)"
-		[ -z "$short_err" ] && short_err="non-zero exit $rsync_status"
-	
-		printf "Status   : %s\n\n" "$(color red "Error: $short_err")"
-	fi
+		rsyncpathguard=""
+		if [ "$mode_label" = "single" ]; then
+			rsyncpathguard="--rsync-path=\"test -d '$targetparentfull' || echo '__SYNC_SKIP_PARENT_MISSING__:$targetparentfull' 1>&2; test -d '$targetparentfull' && rsync\""
+		fi
 
-	if [ -n "$target_usermin" ]; then
-		printf "Syncing to    : %s (Usermin)\n" "$(color cyan "$server")"
-		cmdsync="${local_nohup_sshpass}${rsync_cmd} ${rsyncdefflags} ${rsyncextraflags} ${rsyncdefexcludeflags} -e \"$ssh_cmd$local_sshport_opt ${local_sshnocheck}\" \"$sourcefull\" $user@$ssh_host:\"$targetfull_usermin\"/"
-		local cmd_print="$cmdsync"
+		cmdsync="${local_nohup_sshpass}${rsync_cmd} ${rsyncdefflags} ${rsyncextraflags} ${rsyncdefexcludeflags} ${rsyncpathguard} -e \"$ssh_cmd$local_sshport_opt ${local_sshnocheck}\" \"$sourcefull\" $user@$ssh_host:\"$targetfull\"/"
+		cmd_print="$cmdsync"
 		if [ -n "$password" ]; then
 			cmd_print="${cmd_print//$password/<password>}"
 		fi
@@ -1036,9 +1047,64 @@ process_host() {
 
 		if [ "$rsync_status" -eq 0 ]; then
 			printf "Status   : %s\n\n" "$(color green "Success")"
+		elif [ "$mode_label" = "single" ] && printf '%s\n' "$rsync_output" | grep -q '__SYNC_SKIP_PARENT_MISSING__:'; then
+			skipped_parent="$(
+				printf '%s\n' "$rsync_output" \
+				| "$sed_cmd" -n 's/.*__SYNC_SKIP_PARENT_MISSING__://p' \
+				| head -n1 \
+				| "$sed_cmd" 's/[[:space:]]*$//'
+			)"
+			[ -z "$skipped_parent" ] && skipped_parent="$targetparentfull"
+			printf "Status   : %s\n\n" "$(color yellow "Skipped: $skipped_parent does not exist on remote (single mode requires existing project directory).")"
 		else
-			short_err="$(printf '%s\n' "$rsync_output" | head -n 2 | tr '\n' '; ' | $sed_cmd 's/; $//')"
-			printf "Status   : %s\n\n" "$(color red "Error: ${short_err:-non-zero exit $rsync_status}")"
+			short_err="$(
+				printf '%s\n' "$rsync_output" \
+				| "$sed_cmd" '/^[[:space:]]*$/d' \
+				| head -n 2 \
+				| tr '\n' '; ' \
+				| "$sed_cmd" 's/[;[:space:]]*$//'
+			)"
+			[ -z "$short_err" ] && short_err="non-zero exit $rsync_status"
+		
+			printf "Status   : %s\n\n" "$(color red "Error: $short_err")"
+		fi
+	fi
+
+	if [ -n "$target_usermin" ]; then
+		printf "Syncing to    : %s (Usermin)\n" "$(color cyan "$server")"
+		if [ "$mode_label" = "full" ] && ! remote_dir_exists "$targetfull_usermin"; then
+			printf "Status   : %s\n\n" "$(color yellow "Skipped: $targetfull_usermin does not exist on remote (full mode requires existing project directory).")"
+		else
+			rsyncpathguard=""
+			if [ "$mode_label" = "single" ]; then
+				rsyncpathguard="--rsync-path=\"test -d '$targetparentfull_usermin' || echo '__SYNC_SKIP_PARENT_MISSING__:$targetparentfull_usermin' 1>&2; test -d '$targetparentfull_usermin' && rsync\""
+			fi
+
+			cmdsync="${local_nohup_sshpass}${rsync_cmd} ${rsyncdefflags} ${rsyncextraflags} ${rsyncdefexcludeflags} ${rsyncpathguard} -e \"$ssh_cmd$local_sshport_opt ${local_sshnocheck}\" \"$sourcefull\" $user@$ssh_host:\"$targetfull_usermin\"/"
+			cmd_print="$cmdsync"
+			if [ -n "$password" ]; then
+				cmd_print="${cmd_print//$password/<password>}"
+			fi
+			printf "Command used  : %s\n" "$(color dim "$cmd_print")"
+
+			rsync_output=$(eval "$cmdsync" 2>&1)
+			rsync_status=$?
+
+			if [ "$rsync_status" -eq 0 ]; then
+				printf "Status   : %s\n\n" "$(color green "Success")"
+			elif [ "$mode_label" = "single" ] && printf '%s\n' "$rsync_output" | grep -q '__SYNC_SKIP_PARENT_MISSING__:'; then
+				skipped_parent="$(
+					printf '%s\n' "$rsync_output" \
+					| "$sed_cmd" -n 's/.*__SYNC_SKIP_PARENT_MISSING__://p' \
+					| head -n1 \
+					| "$sed_cmd" 's/[[:space:]]*$//'
+				)"
+				[ -z "$skipped_parent" ] && skipped_parent="$targetparentfull_usermin"
+				printf "Status   : %s\n\n" "$(color yellow "Skipped: $skipped_parent does not exist on remote (single mode requires existing project directory).")"
+			else
+				short_err="$(printf '%s\n' "$rsync_output" | head -n 2 | tr '\n' '; ' | $sed_cmd 's/; $//')"
+				printf "Status   : %s\n\n" "$(color red "Error: ${short_err:-non-zero exit $rsync_status}")"
+			fi
 		fi
 	fi
 
