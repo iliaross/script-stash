@@ -243,6 +243,17 @@ if [ "$project_root" = "debug-bash" ]; then
 	exit 0
 fi
 
+# Project-specific routing overrides
+project_only_server_key=""
+project_target_override=""
+
+case "$project_root" in
+	rostovtsev.io)
+		project_only_server_key="kali"
+		project_target_override="var/www/html"
+		;;
+esac
+
 # Rsync / mode / source
 rsyncdefflags="-rvz"
 rsyncextraflags=""
@@ -491,6 +502,10 @@ for h in "${debug_hosts_all[@]}"; do
 		continue
 	fi
 
+	if [ -n "$project_only_server_key" ] && [ "$server_key" != "$project_only_server_key" ]; then
+		continue
+	fi
+
 	if [ "$running_mode" -eq 1 ] && [ "$is_local" -eq 1 ]; then
 		if [ "${#incl_instances[@]}" -eq 0 ]; then
 			continue
@@ -716,6 +731,10 @@ process_host() {
 		fi
 	fi
 
+	if [ -n "$project_only_server_key" ] && [ "$server_key" != "$project_only_server_key" ]; then
+		return 0
+	fi
+
 	local target=""
 	local target_usermin=""
 	local single_rel_subdir=""
@@ -739,6 +758,11 @@ process_host() {
 		if [ -n "$projectroottarget_usermin" ]; then
 			target_usermin="usr/share/$projectroottarget_usermin"
 		fi
+	fi
+
+	if [ -n "$project_target_override" ]; then
+		target="$project_target_override"
+		target_usermin=""
 	fi
 
 	# Virtualmin shop
