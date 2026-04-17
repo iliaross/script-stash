@@ -995,11 +995,20 @@ process_host() {
 		# SSL cert sync
 		if printf '%s\n' "$sshcmd" | grep -q 'sync-ssl'; then
 			local domdef="$server"
-			if [ -n "$domain_filter" ]; then
-				domdef="$server"
+			local cert_domain="$server"
+			local cert_dir=""
+			if printf '%s\n' "$server" | grep -q '\.'; then
+				cert_domain="${server#*.}"
 			fi
-			sshcmdprelocal='tar -cf - -C ~/Git/.ssl/virtualmin.dev ssl.cert ssl.key ssl.ca | '
-			sshcmdlocal="tar -xf - -C /root && virtualmin install-cert --domain $domdef --cert /root/ssl.cert --key /root/ssl.key --ca /root/ssl.ca > /root/virtualmin-install-cert.log 2>&1 && rm -f /root/ssl.cert /root/ssl.key /root/ssl.ca"
+			cert_dir="$git_home/.ssl/$cert_domain"
+
+			if [ ! -d "$cert_dir" ]; then
+				printf "Status   : %s\n\n" "$(color red "Error: Missing local SSL directory ${cert_dir/$HOME/~}")"
+				return 0
+			fi
+
+			sshcmdprelocal="tar -cf - -C \"$cert_dir\" ssl.cert ssl.key ssl.ca | "
+			sshcmdlocal="tar -xf - -C /root && virtualmin install-cert --domain \"$domdef\" --cert /root/ssl.cert --key /root/ssl.key --ca /root/ssl.ca > /root/virtualmin-install-cert.log 2>&1 && rm -f /root/ssl.cert /root/ssl.key /root/ssl.ca"
 		fi
 
 		# Time sync
