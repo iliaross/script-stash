@@ -52,6 +52,10 @@ problem-solving. This is my personal toolbox of utilities I built over time.
   Compares two packages or archives (RPM, DEB, TAR), summarizing added, removed,
   and changed files (including package scripts), with optional metadata,
   side-by-side diffs, and the ability to skip diffing selected paths.
+- **ssh-dl.bash**  
+  Downloads files or directory trees from a remote host over SSH with filtering
+  by size, extension, name patterns, or content, optional list/stats-only modes,
+  and sorted selection before streaming selected results to a local destination.
 
 ### Requirements
 
