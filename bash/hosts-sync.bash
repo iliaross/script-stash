@@ -988,7 +988,7 @@ process_host() {
 			if printf '%s\n' "$target" | grep -q 'libexec'; then
 				sshcmdlocal="systemctl restart chronyd ; sleep 15 ; dnf clean all ; dnf -y upgrade > /root/package-updates.log 2>&1"
 			else
-				sshcmdlocal="systemctl restart systemd-timesyncd ; sleep 15 ; apt-get clean ; apt-get update > /root/package-updates.log 2>&1 ; apt-get -y upgrade --with-new-pkgs --allow-change-held-packages --fix-missing -o APT::Get::Always-Include-Phased-Updates=true >> /root/package-updates.log 2>&1 ; apt -y autoremove >> /root/package-updates.log 2>&1"
+				sshcmdlocal="systemctl restart systemd-timesyncd ; systemctl restart chronyd ; sleep 15 ; apt-get clean ; apt-get update > /root/package-updates.log 2>&1 ; apt-get -y upgrade --with-new-pkgs --allow-change-held-packages --fix-missing -o APT::Get::Always-Include-Phased-Updates=true >> /root/package-updates.log 2>&1 ; apt -y autoremove >> /root/package-updates.log 2>&1"
 			fi
 		fi
 
@@ -1013,11 +1013,7 @@ process_host() {
 
 		# Time sync
 		if printf '%s\n' "$sshcmd" | grep -q 'sync-time'; then
-			if printf '%s\n' "$target" | grep -q 'libexec'; then
-				sshcmdlocal="systemctl restart chronyd"
-			else
-				sshcmdlocal="systemctl restart systemd-timesyncd"
-			fi
+			sshcmdlocal="systemctl restart systemd-timesyncd ; systemctl restart chronyd"
 		fi
 
 		local cmd=""
