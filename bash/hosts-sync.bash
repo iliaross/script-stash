@@ -24,8 +24,12 @@
 #       --running:<name>      (only a specific local VM, e.g. rocky10-pro)
 #       --running=<file-name> (sync only that file to all running local VMs)
 #       --regex:<pattern>     (only hosts whose FQDN matches pattern)
+#   - Narrows sync source by:
+#       --module              (sync module containing the selected file/path)
+#       --module=<file-name>  (sync module containing that file/path)
 #   - Syncs either:
 #       * a full project tree, or
+#       * a module directory inside the project, or
 #       * a single file inside the project
 #   - Can also run remote commands instead of rsync (upgrade-packages, sync-ssl,
 #     sync-time, etc.)
@@ -53,6 +57,10 @@
 #
 #   # Sync a single file to all selected hosts (no running filter)
 #   ./hosts-sync.bash /path/to/project miniserv.pl
+#
+#   # Sync the module containing the selected file/path
+#   ./hosts-sync.bash /path/to/project mysql/index.cgi --module
+#   ./hosts-sync.bash /path/to/project --module=mysql/index.cgi
 #
 #   # Run a remote maintenance command on all running local VMs
 #   ./hosts-sync.bash "" --running "" "" "upgrade-packages"
@@ -127,6 +135,99 @@ in_list() {
 	return 1
 }
 
+is_control_arg() {
+	local arg="$1"
+	case "$arg" in
+		""|--running|--running:*|--running=*|--regex:*|--module|--module=*|--current-module|--current-module=*)
+			return 0
+			;;
+	esac
+	return 1
+}
+
+git_rel_from_arg() {
+	local path_arg="$1"
+	local rel=""
+
+	[ -z "$path_arg" ] && return 1
+
+	case "$path_arg" in
+		~/*) path_arg="${HOME}/${path_arg#~/}" ;;
+	esac
+
+	case "$path_arg" in
+		"$git_home"/*)
+			rel="${path_arg#"${git_home}/"}"
+			;;
+		/*)
+			return 1
+			;;
+		*)
+			rel="${project_rel}/${path_arg}"
+			;;
+	esac
+
+	while [[ "$rel" == ./* ]]; do
+		rel="${rel#./}"
+	done
+	rel="${rel//\/.\//\/}"
+	rel="${rel%/}"
+
+	case "$rel" in
+		".."|../*|*/../*|*/..)
+			return 1
+			;;
+	esac
+
+	[ -n "$rel" ] || return 1
+	printf '%s\n' "$rel"
+}
+
+find_module_source_rel() {
+	local context_rel="$1"
+	local context_path="$git_home/$context_rel"
+	local dir=""
+	local module=""
+
+	if [ -d "$context_path" ]; then
+		dir="$context_path"
+	else
+		dir="${context_path%/*}"
+	fi
+
+	while [ -n "$dir" ] && [ "$dir" != "$git_home" ] && [ "$dir" != "/" ]; do
+		if [ -f "$dir/module.info" ] || [ -f "$dir/module.info.dist" ]; then
+			printf '%s\n' "${dir#"${git_home}/"}"
+			return 0
+		fi
+		[ "$dir" = "$git_home/$project_root" ] && break
+		dir="${dir%/*}"
+	done
+
+	case "$context_rel" in
+		webmin/*/*)
+			module="${context_rel#webmin/}"
+			module="${module%%/*}"
+			[ -n "$module" ] && printf 'webmin/%s\n' "$module" && return 0
+			;;
+		usermin/*/*)
+			module="${context_rel#usermin/}"
+			module="${module%%/*}"
+			[ -n "$module" ] && printf 'usermin/%s\n' "$module" && return 0
+			;;
+	esac
+
+	if [ "$project_root" != "webmin" ] && [ "$project_root" != "usermin" ]; then
+		if [ -f "$git_home/$project_root/module.info" ] || \
+		   [ -f "$git_home/$project_root/module.info.dist" ]; then
+			printf '%s\n' "$project_root"
+			return 0
+		fi
+	fi
+
+	return 1
+}
+
 get_host_port() {
 	local key="$1"
 	local i
@@ -163,6 +264,8 @@ target_name=""
 domain_filter=""
 single_file_sync=0
 single_file_name=""
+module_sync=0
+module_file_name=""
 
 if printf '%s %s %s %s\n' "$arg2" "$arg3" "$arg4" "$sshcmd" | grep -q -- '--running'; then
 	running_mode=1
@@ -177,6 +280,18 @@ elif [[ "$arg2" == --running=* ]]; then
 	single_file_sync=1
 	single_file_name="$val"
 fi
+
+for opt in "$arg2" "$arg3" "$arg4"; do
+	case "$opt" in
+		--module|--current-module)
+			module_sync=1
+			;;
+		--module=*|--current-module=*)
+			module_sync=1
+			module_file_name="${opt#*=}"
+			;;
+	esac
+done
 
 if printf '%s %s %s %s\n' "$arg2" "$arg3" "$arg4" "$sshcmd" | grep -q -- '--regex:'; then
 	regex_val="$(printf '%s %s %s %s\n' "$arg2" "$arg3" "$arg4" "$sshcmd" \
@@ -205,7 +320,8 @@ pretty_project="${project_abs/$HOME/~}"
 printf "Project : %s\n" "$(color cyan "${pretty_project:-<none>}")"
 printf "Running : %s\n" "$(color cyan "$([ "$running_mode" -eq 1 ] && echo yes || echo no)")"
 printf "Target  : %s\n" "$(color cyan "${target_name:-<all>}")"
-printf "Regex   : %s\n\n" "$(color cyan "${domain_filter:-<none>}")"
+printf "Regex   : %s\n" "$(color cyan "${domain_filter:-<none>}")"
+printf "Module  : %s\n\n" "$(color cyan "$([ "$module_sync" -eq 1 ] && echo yes || echo no)")"
 
 # Project detection
 section "Project detection"
@@ -260,11 +376,54 @@ rsyncextraflags=""
 rsyncdefexcludeflags="--exclude=*.wbt.gz* --exclude=*.css.gz* --exclude=*.js.gz* --exclude=.git --exclude=.git-data --exclude=.scripts --exclude=.art --exclude=node_modules --exclude=*.fuse_* --exclude=.build --exclude=.backups --exclude=.vscode"
 
 # Decide mode and source path
-if [ "$single_file_sync" -eq 1 ]; then
+module_source_rel=""
+module_context_rel=""
+if [ "$module_sync" -eq 1 ]; then
+	module_context_arg="$module_file_name"
+	if [ -z "$module_context_arg" ] && [ "$single_file_sync" -eq 1 ]; then
+		module_context_arg="$single_file_name"
+	fi
+	if [ -z "$module_context_arg" ]; then
+		for opt in "$arg2" "$arg3" "$arg4"; do
+			[ "$opt" = "force" ] && continue
+			if ! is_control_arg "$opt"; then
+				module_context_arg="$opt"
+				break
+			fi
+		done
+	fi
+
+	if [ -n "$module_context_arg" ]; then
+		if ! module_context_rel="$(git_rel_from_arg "$module_context_arg")"; then
+			printf "%s\n" "$(color red "Error: Module context path must be inside '$git_home'.")" >&2
+			exit 1
+		fi
+	else
+		module_context_rel="$project_rel"
+	fi
+
+	case "$module_context_rel" in
+		"$project_root"|"$project_root"/*)
+			;;
+		*)
+			printf "%s\n" "$(color red "Error: Module context path must be inside project root '$project_root'.")" >&2
+			exit 1
+			;;
+	esac
+
+	if ! module_source_rel="$(find_module_source_rel "$module_context_rel")"; then
+		printf "%s\n" "$(color red "Error: Could not detect a module directory for '${module_context_rel:-<none>}'.")" >&2
+		exit 1
+	fi
+
+	project_source_rel="$module_source_rel"
+	source_rel="${project_source_rel}/"
+	mode_label="module"
+elif [ "$single_file_sync" -eq 1 ]; then
 	project_source_rel="$project_rel"
 	source_rel="${project_source_rel}/${single_file_name}"
 	mode_label="single"
-elif [ -n "$arg2" ] && [[ "$arg2" != --running* ]] && [[ "$arg2" != --regex:* ]]; then
+elif [ -n "$arg2" ] && ! is_control_arg "$arg2"; then
 	project_source_rel="$project_rel"
 	source_rel="${project_source_rel}/${arg2}"
 	mode_label="single"
@@ -275,8 +434,8 @@ else
 fi
 
 # Decide rsyncextraflags *after* we know the mode:
-# - full  : --no-links (unless force)
-# - single: --no-links (unless force)
+# - full/module: --no-links (unless force)
+# - single     : --no-links (unless force)
 if [ "$arg4" != "force" ]; then
 	rsyncextraflags="--no-links"
 elif [ "$project_root" = "usermin" ]; then
@@ -591,6 +750,10 @@ fi
 # Project-specific target mapping
 projectroottarget="$project_root"
 projectroottarget_usermin=""
+target_project_rel="$project_rel"
+if [ "$mode_label" = "module" ]; then
+	target_project_rel="${module_source_rel%/}"
+fi
 
 # If the repo itself is a Webmin module (standalone module repo),
 # treat it as webmin/<module>. This covers repos like "nftables".
@@ -603,11 +766,11 @@ if [ "$project_root" != "webmin" ] && [ "$project_root" != "usermin" ]; then
 fi
 
 # Special handling for Webmin modules (e.g. webmin/xterm, webmin/filemin)
-if [ "$project_root" = "webmin" ]; then
-	case "$project_rel" in
+if [ "$project_root" = "webmin" ] && [ "$mode_label" != "full" ]; then
+	case "$target_project_rel" in
 		webmin/*)
 			# Take first component after "webmin/" as module name
-			module="${project_rel#webmin/}"
+			module="${target_project_rel#webmin/}"
 			module="${module%%/*}"
 			if [ -n "$module" ]; then
 				projectroottarget="webmin/$module"
@@ -616,8 +779,22 @@ if [ "$project_root" = "webmin" ]; then
 	esac
 fi
 
+if [ "$project_root" = "usermin" ] && [ "$mode_label" != "full" ]; then
+	case "$target_project_rel" in
+		usermin/*)
+			module="${target_project_rel#usermin/}"
+			module="${module%%/*}"
+			if [ -n "$module" ]; then
+				projectroottarget="usermin/$module"
+			fi
+			;;
+	esac
+fi
+
 if [[ "$project_root" =~ ^(authentic-theme-src|virtual-server-theme|server-manager|virtualmin-.*)$ ]]; then
-	if [ -n "$arg2" ] && [[ "$arg2" != --running* ]] && [[ "$arg2" != --regex:* ]]; then
+	if [ "$mode_label" = "module" ]; then
+		subprojectdir="$target_project_rel"
+	elif [ -n "$arg2" ] && ! is_control_arg "$arg2"; then
 		subprojectdir="$project_rel"
 	else
 		subprojectdir="$project_root"
@@ -647,7 +824,7 @@ if [[ "$project_root" =~ ^(authentic-theme-src|virtual-server-theme|server-manag
 		projectroottarget="${projectroottarget/$project_root/virtual-server/pro}"
 	fi
 
-	if [ "$project_rel" = "server-manager/server-manager" ]; then
+	if [ "$target_project_rel" = "server-manager/server-manager" ]; then
 		projectroottarget="${projectroottarget/$project_root\/server-manager/server-manager}"
 		rsyncextraflags+=" --exclude=module.info"
 	fi
@@ -660,6 +837,8 @@ if [ -n "$sshcmd" ]; then
 else
 	if [ "$mode_label" = "single" ]; then
 		printf "%s\n\n" "$(color cyan "Syncing single file across selected debug hosts...")"
+	elif [ "$mode_label" = "module" ]; then
+		printf "%s\n\n" "$(color cyan "Syncing current module across selected debug hosts...")"
 	else
 		printf "%s\n\n" "$(color cyan "Syncing full project across selected debug hosts...")"
 	fi
@@ -818,7 +997,7 @@ process_host() {
 		#   base_rel    = webmin/mysql
 		#   source_rel  = webmin/mysql/lang/en
 		#   rel_to_base = lang/en
-		rel_to_base="${source_rel#$base_rel/}"
+		rel_to_base="${source_rel#"$base_rel"/}"
 
 		# Only adjust if we actually stripped the prefix and still
 		# have a subdirectory part.
@@ -903,7 +1082,7 @@ process_host() {
 		target="root"
 	fi
 
-	if [ "$project_rel" = "server-manager/server-manager" ]; then
+	if [ "$target_project_rel" = "server-manager/server-manager" ]; then
 		projectroottarget="${projectroottarget//\/server-manager\/server-manager/}"
 		if [ "$freebsdwebmindir" -eq 1 ]; then
 			return 0
@@ -927,11 +1106,11 @@ process_host() {
 	local target_project_parent="$target"
 	local target_project_parent_usermin="$target_usermin"
 	if [ "$mode_label" = "single" ] && [ -n "$single_rel_subdir" ]; then
-		if [ "${target%/$single_rel_subdir}" != "$target" ]; then
-			target_project_parent="${target%/$single_rel_subdir}"
+		if [ "${target%/"$single_rel_subdir"}" != "$target" ]; then
+			target_project_parent="${target%/"$single_rel_subdir"}"
 		fi
-		if [ -n "$target_usermin" ] && [ "${target_usermin%/$single_rel_subdir}" != "$target_usermin" ]; then
-			target_project_parent_usermin="${target_usermin%/$single_rel_subdir}"
+		if [ -n "$target_usermin" ] && [ "${target_usermin%/"$single_rel_subdir"}" != "$target_usermin" ]; then
+			target_project_parent_usermin="${target_usermin%/"$single_rel_subdir"}"
 		fi
 	fi
 
@@ -966,7 +1145,7 @@ process_host() {
 		fi
 	fi
 
-	# In full mode we only sync projects that already exist remotely.
+	# In full/module mode we only sync targets that already exist remotely.
 	remote_dir_exists() {
 		local remote_path="$1"
 		local check_cmd=""
@@ -1056,8 +1235,8 @@ process_host() {
 	local cmdsync cmd_print rsyncpathguard skipped_parent
 
 	printf "\nSyncing to    : %s (Webmin)\n" "$(color cyan "$server")"
-	if [ "$mode_label" = "full" ] && ! remote_dir_exists "$targetfull"; then
-		printf "Status   : %s\n\n" "$(color yellow "Skipped: $targetfull does not exist on remote (full mode requires existing project directory).")"
+	if [ "$mode_label" != "single" ] && ! remote_dir_exists "$targetfull"; then
+		printf "Status   : %s\n\n" "$(color yellow "Skipped: $targetfull does not exist on remote ($mode_label mode requires existing target directory).")"
 	else
 		rsyncpathguard=""
 		if [ "$mode_label" = "single" ]; then
@@ -1101,8 +1280,8 @@ process_host() {
 
 	if [ -n "$target_usermin" ]; then
 		printf "Syncing to    : %s (Usermin)\n" "$(color cyan "$server")"
-		if [ "$mode_label" = "full" ] && ! remote_dir_exists "$targetfull_usermin"; then
-			printf "Status   : %s\n\n" "$(color yellow "Skipped: $targetfull_usermin does not exist on remote (full mode requires existing project directory).")"
+		if [ "$mode_label" != "single" ] && ! remote_dir_exists "$targetfull_usermin"; then
+			printf "Status   : %s\n\n" "$(color yellow "Skipped: $targetfull_usermin does not exist on remote ($mode_label mode requires existing target directory).")"
 		else
 			rsyncpathguard=""
 			if [ "$mode_label" = "single" ]; then

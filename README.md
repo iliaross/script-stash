@@ -42,8 +42,8 @@ problem-solving. This is my personal toolbox of utilities I built over time.
 - **hosts-sync.bash**  
   Syncs local Git projects to remote `debug-*` hosts defined in `/etc/hosts`,
   with specific support for Webmin and its modules, filtering by running virtual
-  machine or domain patterns, and syncing either full projects or single files
-  over `rsync`.
+  machine or domain patterns, and syncing full projects, current module
+  directories, or single files over `rsync`.
 - **hosts-connect.bash**  
   Convenience wrapper around `ssh` to connect to `debug-*` hosts using short
   names, resolving the full hostname from `/etc/hosts` and reading the SSH
