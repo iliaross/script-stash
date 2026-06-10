@@ -82,7 +82,7 @@ readonly sshpass_cmd="sshpass"
 readonly nohup_cmd="nohup"
 
 readonly default_user="root"
-readonly sshnocheck='-o ConnectTimeout=1 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=QUIET'
+readonly sshnocheck='-o ConnectTimeout=2 -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=QUIET'
 
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
 	use_color=1
@@ -1237,7 +1237,7 @@ process_host() {
 	local local_nohup_sshpass=""
 	if printf '%s\n' "$server_raw" | grep -q -- '-pubkey'; then
 		if printf '%s\n' "$server_raw" | grep -q 'cloud-'; then
-			local_sshnocheck="${sshnocheck/ConnectTimeout=1/ConnectTimeout=3}"
+			local_sshnocheck="${sshnocheck/ConnectTimeout=2/ConnectTimeout=3}"
 		fi
 		local_sshnocheck="${local_sshnocheck/ -o PubkeyAuthentication=no/}"
 	else
@@ -1245,7 +1245,7 @@ process_host() {
 			local_sshnocheck="$local_sshnocheck -o PubkeyAuthentication=no"
 		fi
 		if ! printf '%s\n' "$server_raw" | grep -q 'cloud-'; then
-			local_sshnocheck="${local_sshnocheck/ConnectTimeout=3/ConnectTimeout=1}"
+			local_sshnocheck="${local_sshnocheck/ConnectTimeout=3/ConnectTimeout=2}"
 		fi
 		local_nohup_sshpass="$sshpass_cmd -p $password "
 	fi
