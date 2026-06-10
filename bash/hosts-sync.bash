@@ -108,9 +108,32 @@ color() {
 		magenta) code=95 ;;
 		cyan)    code=96 ;;
 		gray)    code=90 ;;
+		badge_success) code='92;48;5;22' ;;
+		badge_warning) code='93;48;5;58' ;;
+		badge_danger)  code='91;48;5;52' ;;
+		badge_neutral) code='90;48;5;236' ;;
 		*)       printf '%s' "$s"; return ;;
 	esac
 	printf '\033[%sm%s\033[0m' "$code" "$s"
+}
+
+badge() {
+	local kind="$1" label="$2"
+	local padded
+
+	padded="$(printf '%-7s' "$label")"
+
+	if [ "$use_color" -eq 0 ]; then
+		printf '%s' "$padded"
+		return
+	fi
+
+	case "$kind" in
+		success) color badge_success "$padded" ;;
+		warning) color badge_warning "$padded" ;;
+		danger)  color badge_danger "$padded" ;;
+		*)       color badge_neutral "$padded" ;;
+	esac
 }
 
 section() {
@@ -844,6 +867,102 @@ else
 	fi
 fi
 
+host_result_file=""
+
+record_sync_result() {
+	local host="$1"
+	local target_label="$2"
+	local state="$3"
+	local status_text="$4"
+
+	[ -n "${host_result_file:-}" ] || return 0
+	status_text="${status_text//$'\n'/ }"
+	printf '%s\t%s\t%s\t%s\n' "$host" "$target_label" "$state" "$status_text" >>"$host_result_file"
+}
+
+target_label_suffix() {
+	case "$1" in
+		Webmin|webmin)   printf '[webmin]' ;;
+		Usermin|usermin) printf '[usermin]' ;;
+		command)         printf '[command]' ;;
+		*)               printf '[%s]' "$1" ;;
+	esac
+}
+
+sync_results_need_target_labels() {
+	local result_file host target_label state status_text first_label label saw_label
+	first_label=""
+	saw_label=0
+
+	for result_file in "${job_results[@]}"; do
+		[ -s "$result_file" ] || continue
+		while IFS=$'\t' read -r host target_label state status_text; do
+			[ -n "$target_label" ] || continue
+			saw_label=1
+			case "$target_label" in
+				Webmin|webmin)   label="webmin" ;;
+				Usermin|usermin) label="usermin" ;;
+				command)         label="command" ;;
+				*)               label="$target_label" ;;
+			esac
+			if [ -z "$first_label" ]; then
+				first_label="$label"
+			elif [ "$label" != "$first_label" ]; then
+				return 0
+			fi
+		done <"$result_file"
+	done
+
+	[ "$saw_label" -eq 1 ] || return 1
+	[ "$first_label" = "webmin" ] && return 1
+	return 0
+}
+
+print_sync_results() {
+	local i result_file host target_label state status_text host_label state_label saw_result show_target_labels
+	saw_result=0
+	show_target_labels=0
+
+	if sync_results_need_target_labels; then
+		show_target_labels=1
+	fi
+
+	section "Sync results"
+
+	for i in "${!job_results[@]}"; do
+		result_file="${job_results[$i]}"
+		if [ ! -s "$result_file" ]; then
+			host="${selected_hosts[$i]#debug-}"
+			host="${host%\*}"
+			saw_result=1
+			printf "%s %s\n" "$(badge warning "warning")" "$(color cyan "$host")"
+			continue
+		fi
+		while IFS=$'\t' read -r host target_label state status_text; do
+			[ -n "$host" ] || continue
+			saw_result=1
+			host_label="$host"
+			if [ "$show_target_labels" -eq 1 ] && [ -n "$target_label" ]; then
+				host_label="$host_label $(target_label_suffix "$target_label")"
+			fi
+
+			case "$state" in
+				success) state_label="$(badge success "success")" ;;
+				skipped) state_label="$(badge warning "warning")" ;;
+				error) state_label="$(badge danger "error")" ;;
+				*) state_label="$(badge neutral "$state")" ;;
+			esac
+
+			printf "%s %s\n" "$state_label" "$(color cyan "$host_label")"
+		done <"$result_file"
+	done
+
+	if [ "$saw_result" -eq 0 ]; then
+		printf "%s\n" "$(color yellow "No per-host sync results were recorded.")"
+	fi
+	printf "\n"
+}
+
 # Per-host processing
 process_host() {
 	local server_raw="$1"
@@ -856,6 +975,7 @@ process_host() {
 	local initial_source="$source_rel"
 	local user="$default_user"
 	local local_sshnocheck="$sshnocheck"
+	local status_text=""
 
 	# If a port was recorded for this host, add it to SSH options
 	local local_sshport_opt=""
@@ -1182,7 +1302,9 @@ process_host() {
 			cert_dir="$git_home/.ssl/$cert_domain"
 
 			if [ ! -d "$cert_dir" ]; then
-				printf "Status   : %s\n\n" "$(color red "Error: Missing local SSL directory ${cert_dir/$HOME/~}")"
+				status_text="Error: Missing local SSL directory ${cert_dir/$HOME/~}"
+				printf "Status   : %s\n\n" "$(color red "$status_text")"
+				record_sync_result "$server" "command" "error" "$status_text"
 				return 0
 			fi
 
@@ -1202,7 +1324,7 @@ process_host() {
 			cmd="$sshcmdprelocal$ssh_cmd$local_sshport_opt -t -T $local_sshnocheck root@$ssh_host \"$sshcmdlocal\""
 		fi
 
-		printf "\nSyncing to    : %s (command)\n" "$(color cyan "$server")"
+		printf "\nSyncing to    : %s %s\n" "$(color cyan "$server")" "$(target_label_suffix "command")"
 		local cmd_print="$cmd"
 		if [ -n "$password" ]; then
 			cmd_print="${cmd_print//$password/<password>}"
@@ -1214,7 +1336,9 @@ process_host() {
 		ssh_status=$?
 
 		if [ "$ssh_status" -eq 0 ]; then
-			printf "Status   : %s\n\n" "$(color green "Success")"
+			status_text="Success"
+			printf "Status   : %s\n\n" "$(color green "$status_text")"
+			record_sync_result "$server" "command" "success" "$status_text"
 		else
 			short_err="$(
 				printf '%s\n' "$ssh_output" \
@@ -1225,7 +1349,9 @@ process_host() {
 			)"
 			[ -z "$short_err" ] && short_err="non-zero exit $ssh_status"
 		
-			printf "Status   : %s\n\n" "$(color red "Error: $short_err")"
+			status_text="Error: $short_err"
+			printf "Status   : %s\n\n" "$(color red "$status_text")"
+			record_sync_result "$server" "command" "error" "$status_text"
 		fi
 		return 0
 	fi
@@ -1234,9 +1360,11 @@ process_host() {
 	local rsync_output rsync_status short_err
 	local cmdsync cmd_print rsyncpathguard skipped_parent
 
-	printf "\nSyncing to    : %s (Webmin)\n" "$(color cyan "$server")"
+	printf "\nSyncing to    : %s %s\n" "$(color cyan "$server")" "$(target_label_suffix "Webmin")"
 	if [ "$mode_label" != "single" ] && ! remote_dir_exists "$targetfull"; then
-		printf "Status   : %s\n\n" "$(color yellow "Skipped: $targetfull does not exist on remote ($mode_label mode requires existing target directory).")"
+		status_text="Skipped: $targetfull does not exist on remote ($mode_label mode requires existing target directory)."
+		printf "Status   : %s\n\n" "$(color yellow "$status_text")"
+		record_sync_result "$server" "Webmin" "skipped" "$status_text"
 	else
 		rsyncpathguard=""
 		if [ "$mode_label" = "single" ]; then
@@ -1254,7 +1382,9 @@ process_host() {
 		rsync_status=$?
 
 		if [ "$rsync_status" -eq 0 ]; then
-			printf "Status   : %s\n\n" "$(color green "Success")"
+			status_text="Success"
+			printf "Status   : %s\n\n" "$(color green "$status_text")"
+			record_sync_result "$server" "Webmin" "success" "$status_text"
 		elif [ "$mode_label" = "single" ] && printf '%s\n' "$rsync_output" | grep -q '__SYNC_SKIP_PARENT_MISSING__:'; then
 			skipped_parent="$(
 				printf '%s\n' "$rsync_output" \
@@ -1263,7 +1393,9 @@ process_host() {
 				| "$sed_cmd" 's/[[:space:]]*$//'
 			)"
 			[ -z "$skipped_parent" ] && skipped_parent="$targetparentfull"
-			printf "Status   : %s\n\n" "$(color yellow "Skipped: $skipped_parent does not exist on remote (single mode requires existing project directory).")"
+			status_text="Skipped: $skipped_parent does not exist on remote (single mode requires existing project directory)."
+			printf "Status   : %s\n\n" "$(color yellow "$status_text")"
+			record_sync_result "$server" "Webmin" "skipped" "$status_text"
 		else
 			short_err="$(
 				printf '%s\n' "$rsync_output" \
@@ -1274,14 +1406,18 @@ process_host() {
 			)"
 			[ -z "$short_err" ] && short_err="non-zero exit $rsync_status"
 		
-			printf "Status   : %s\n\n" "$(color red "Error: $short_err")"
+			status_text="Error: $short_err"
+			printf "Status   : %s\n\n" "$(color red "$status_text")"
+			record_sync_result "$server" "Webmin" "error" "$status_text"
 		fi
 	fi
 
 	if [ -n "$target_usermin" ]; then
-		printf "Syncing to    : %s (Usermin)\n" "$(color cyan "$server")"
+		printf "Syncing to    : %s %s\n" "$(color cyan "$server")" "$(target_label_suffix "Usermin")"
 		if [ "$mode_label" != "single" ] && ! remote_dir_exists "$targetfull_usermin"; then
-			printf "Status   : %s\n\n" "$(color yellow "Skipped: $targetfull_usermin does not exist on remote ($mode_label mode requires existing target directory).")"
+			status_text="Skipped: $targetfull_usermin does not exist on remote ($mode_label mode requires existing target directory)."
+			printf "Status   : %s\n\n" "$(color yellow "$status_text")"
+			record_sync_result "$server" "Usermin" "skipped" "$status_text"
 		else
 			rsyncpathguard=""
 			if [ "$mode_label" = "single" ]; then
@@ -1299,7 +1435,9 @@ process_host() {
 			rsync_status=$?
 
 			if [ "$rsync_status" -eq 0 ]; then
-				printf "Status   : %s\n\n" "$(color green "Success")"
+				status_text="Success"
+				printf "Status   : %s\n\n" "$(color green "$status_text")"
+				record_sync_result "$server" "Usermin" "success" "$status_text"
 			elif [ "$mode_label" = "single" ] && printf '%s\n' "$rsync_output" | grep -q '__SYNC_SKIP_PARENT_MISSING__:'; then
 				skipped_parent="$(
 					printf '%s\n' "$rsync_output" \
@@ -1308,10 +1446,14 @@ process_host() {
 					| "$sed_cmd" 's/[[:space:]]*$//'
 				)"
 				[ -z "$skipped_parent" ] && skipped_parent="$targetparentfull_usermin"
-				printf "Status   : %s\n\n" "$(color yellow "Skipped: $skipped_parent does not exist on remote (single mode requires existing project directory).")"
+				status_text="Skipped: $skipped_parent does not exist on remote (single mode requires existing project directory)."
+				printf "Status   : %s\n\n" "$(color yellow "$status_text")"
+				record_sync_result "$server" "Usermin" "skipped" "$status_text"
 			else
 				short_err="$(printf '%s\n' "$rsync_output" | head -n 2 | tr '\n' '; ' | $sed_cmd 's/; $//')"
-				printf "Status   : %s\n\n" "$(color red "Error: ${short_err:-non-zero exit $rsync_status}")"
+				status_text="Error: ${short_err:-non-zero exit $rsync_status}"
+				printf "Status   : %s\n\n" "$(color red "$status_text")"
+				record_sync_result "$server" "Usermin" "error" "$status_text"
 			fi
 		fi
 	fi
@@ -1340,16 +1482,21 @@ process_host() {
 # Run per-host syncs in parallel, but keep output grouped per host
 declare -a job_pids
 declare -a job_logs
+declare -a job_results
 job_pids=()
 job_logs=()
+job_results=()
 
 idx=0
 for h in "${selected_hosts[@]}"; do
 	log_file="$(mktemp "/tmp/sync-host-${idx}.XXXX")"
+	result_file="$(mktemp "/tmp/sync-host-result-${idx}.XXXX")"
 	job_logs[idx]="$log_file"
+	job_results[idx]="$result_file"
 
 	# Run the whole host processing in the background, logging to a file
 	(
+		host_result_file="$result_file"
 		process_host "$h"
 	) >"$log_file" 2>&1 &
 
@@ -1362,6 +1509,12 @@ for i in "${!job_pids[@]}"; do
 	wait "${job_pids[$i]}" >/dev/null 2>&1
 	cat "${job_logs[$i]}"
 	rm -f "${job_logs[$i]}"
+done
+
+print_sync_results
+
+for i in "${!job_results[@]}"; do
+	rm -f "${job_results[$i]}"
 done
 
 exit 0
