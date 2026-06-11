@@ -108,6 +108,7 @@ color() {
 		magenta) code=95 ;;
 		cyan)    code=96 ;;
 		gray)    code=90 ;;
+		output)  code='30;47' ;;
 		badge_success) code='92;48;5;22' ;;
 		badge_warning) code='93;48;5;58' ;;
 		badge_danger)  code='91;48;5;52' ;;
@@ -880,6 +881,30 @@ record_sync_result() {
 	printf '%s\t%s\t%s\t%s\n' "$host" "$target_label" "$state" "$status_text" >>"$host_result_file"
 }
 
+print_command_output() {
+	local output="$1"
+	local line
+	local -a output_lines
+	local width=0
+	local padded=""
+	local block_indent="    "
+
+	if [ -z "$(printf '%s\n' "$output" | "$sed_cmd" '/^[[:space:]]*$/d' | head -n 1)" ]; then
+		return 0
+	fi
+
+	printf "Output        :\n"
+	while IFS= read -r line || [ -n "$line" ]; do
+		output_lines+=( "$line" )
+		[ ${#line} -gt "$width" ] && width=${#line}
+	done <<<"$output"
+
+	for line in "${output_lines[@]}"; do
+		printf -v padded '%-*s' $(( width + 2 )) " $line "
+		printf '%s%s\n' "$block_indent" "$(color output "$padded")"
+	done
+}
+
 target_label_suffix() {
 	case "$1" in
 		Webmin|webmin)   printf '[webmin]' ;;
@@ -1303,13 +1328,13 @@ process_host() {
 
 			if [ ! -d "$cert_dir" ]; then
 				status_text="Error: Missing local SSL directory ${cert_dir/$HOME/~}"
-				printf "Status   : %s\n\n" "$(color red "$status_text")"
+				printf "Status        : %s\n\n" "$(color red "$status_text")"
 				record_sync_result "$server" "command" "error" "$status_text"
 				return 0
 			fi
 
 			sshcmdprelocal="tar -cf - -C \"$cert_dir\" ssl.cert ssl.key ssl.ca | "
-			sshcmdlocal="tar -xf - -C /root && virtualmin install-cert --domain \"$domdef\" --cert /root/ssl.cert --key /root/ssl.key --ca /root/ssl.ca > /root/virtualmin-install-cert.log 2>&1 && rm -f /root/ssl.cert /root/ssl.key /root/ssl.ca"
+			sshcmdlocal="tar -xf - -C /root && { virtualmin install-cert --domain \"$domdef\" --cert /root/ssl.cert --key /root/ssl.key --ca /root/ssl.ca > /root/virtualmin-install-cert.log 2>&1; rc=\\\$?; [ ! -s /root/virtualmin-install-cert.log ] || cat /root/virtualmin-install-cert.log; rm -f /root/ssl.cert /root/ssl.key /root/ssl.ca; exit \\\$rc; }"
 		fi
 
 		# Time sync
@@ -1334,10 +1359,11 @@ process_host() {
 		local ssh_output ssh_status short_err
 		ssh_output=$(eval "$cmd" 2>&1)
 		ssh_status=$?
+		print_command_output "$ssh_output"
 
 		if [ "$ssh_status" -eq 0 ]; then
 			status_text="Success"
-			printf "Status   : %s\n\n" "$(color green "$status_text")"
+			printf "Status        : %s\n\n" "$(color green "$status_text")"
 			record_sync_result "$server" "command" "success" "$status_text"
 		else
 			short_err="$(
@@ -1350,7 +1376,7 @@ process_host() {
 			[ -z "$short_err" ] && short_err="non-zero exit $ssh_status"
 		
 			status_text="Error: $short_err"
-			printf "Status   : %s\n\n" "$(color red "$status_text")"
+			printf "Status        : %s\n\n" "$(color red "$status_text")"
 			record_sync_result "$server" "command" "error" "$status_text"
 		fi
 		return 0
@@ -1363,7 +1389,7 @@ process_host() {
 	printf "\nSyncing to    : %s %s\n" "$(color cyan "$server")" "$(target_label_suffix "Webmin")"
 	if [ "$mode_label" != "single" ] && ! remote_dir_exists "$targetfull"; then
 		status_text="Skipped: $targetfull does not exist on remote ($mode_label mode requires existing target directory)."
-		printf "Status   : %s\n\n" "$(color yellow "$status_text")"
+		printf "Status        : %s\n\n" "$(color yellow "$status_text")"
 		record_sync_result "$server" "Webmin" "skipped" "$status_text"
 	else
 		rsyncpathguard=""
@@ -1383,7 +1409,7 @@ process_host() {
 
 		if [ "$rsync_status" -eq 0 ]; then
 			status_text="Success"
-			printf "Status   : %s\n\n" "$(color green "$status_text")"
+			printf "Status        : %s\n\n" "$(color green "$status_text")"
 			record_sync_result "$server" "Webmin" "success" "$status_text"
 		elif [ "$mode_label" = "single" ] && printf '%s\n' "$rsync_output" | grep -q '__SYNC_SKIP_PARENT_MISSING__:'; then
 			skipped_parent="$(
@@ -1394,7 +1420,7 @@ process_host() {
 			)"
 			[ -z "$skipped_parent" ] && skipped_parent="$targetparentfull"
 			status_text="Skipped: $skipped_parent does not exist on remote (single mode requires existing project directory)."
-			printf "Status   : %s\n\n" "$(color yellow "$status_text")"
+			printf "Status        : %s\n\n" "$(color yellow "$status_text")"
 			record_sync_result "$server" "Webmin" "skipped" "$status_text"
 		else
 			short_err="$(
@@ -1407,7 +1433,7 @@ process_host() {
 			[ -z "$short_err" ] && short_err="non-zero exit $rsync_status"
 		
 			status_text="Error: $short_err"
-			printf "Status   : %s\n\n" "$(color red "$status_text")"
+			printf "Status        : %s\n\n" "$(color red "$status_text")"
 			record_sync_result "$server" "Webmin" "error" "$status_text"
 		fi
 	fi
@@ -1416,7 +1442,7 @@ process_host() {
 		printf "Syncing to    : %s %s\n" "$(color cyan "$server")" "$(target_label_suffix "Usermin")"
 		if [ "$mode_label" != "single" ] && ! remote_dir_exists "$targetfull_usermin"; then
 			status_text="Skipped: $targetfull_usermin does not exist on remote ($mode_label mode requires existing target directory)."
-			printf "Status   : %s\n\n" "$(color yellow "$status_text")"
+			printf "Status        : %s\n\n" "$(color yellow "$status_text")"
 			record_sync_result "$server" "Usermin" "skipped" "$status_text"
 		else
 			rsyncpathguard=""
@@ -1436,7 +1462,7 @@ process_host() {
 
 			if [ "$rsync_status" -eq 0 ]; then
 				status_text="Success"
-				printf "Status   : %s\n\n" "$(color green "$status_text")"
+				printf "Status        : %s\n\n" "$(color green "$status_text")"
 				record_sync_result "$server" "Usermin" "success" "$status_text"
 			elif [ "$mode_label" = "single" ] && printf '%s\n' "$rsync_output" | grep -q '__SYNC_SKIP_PARENT_MISSING__:'; then
 				skipped_parent="$(
@@ -1447,12 +1473,12 @@ process_host() {
 				)"
 				[ -z "$skipped_parent" ] && skipped_parent="$targetparentfull_usermin"
 				status_text="Skipped: $skipped_parent does not exist on remote (single mode requires existing project directory)."
-				printf "Status   : %s\n\n" "$(color yellow "$status_text")"
+				printf "Status        : %s\n\n" "$(color yellow "$status_text")"
 				record_sync_result "$server" "Usermin" "skipped" "$status_text"
 			else
 				short_err="$(printf '%s\n' "$rsync_output" | head -n 2 | tr '\n' '; ' | $sed_cmd 's/; $//')"
 				status_text="Error: ${short_err:-non-zero exit $rsync_status}"
-				printf "Status   : %s\n\n" "$(color red "$status_text")"
+				printf "Status        : %s\n\n" "$(color red "$status_text")"
 				record_sync_result "$server" "Usermin" "error" "$status_text"
 			fi
 		fi

@@ -44,6 +44,10 @@ problem-solving. This is my personal toolbox of utilities I built over time.
   with specific support for Webmin and its modules, filtering by running virtual
   machine or domain patterns, and syncing full projects, current module
   directories, or single files over `rsync`.
+- **hosts-sync-exec.bash**  
+  Runs an arbitrary shell command across selected debug hosts via
+  `hosts-sync.bash` remote-command mode, defaulting to currently running local
+  VMs and preserving command arguments through shell-quoting.
 - **hosts-connect.bash**  
   Convenience wrapper around `ssh` to connect to `debug-*` hosts using short
   names, resolving the full hostname from `/etc/hosts` and reading the SSH
