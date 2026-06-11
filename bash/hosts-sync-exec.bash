@@ -79,9 +79,7 @@ while [ $# -gt 0 ]; do
 			;;
 		--running|--running:*|--regex:*)
 			control_args+=( "$1" )
-			if [[ "$1" == --running* ]]; then
-				default_running=0
-			fi
+			default_running=0
 			shift
 			;;
 		-*)
