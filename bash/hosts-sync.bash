@@ -883,26 +883,55 @@ record_sync_result() {
 
 print_command_output() {
 	local output="$1"
+	local clean_output=""
 	local line
-	local -a output_lines
-	local width=0
+	local wrapped_line=""
+	local box_width=0
+	local content_width=0
 	local padded=""
 	local block_indent="    "
 
-	if [ -z "$(printf '%s\n' "$output" | "$sed_cmd" '/^[[:space:]]*$/d' | head -n 1)" ]; then
+	clean_output="${output//$'\r'/$'\n'}"
+	clean_output="$(
+		printf '%s' "$clean_output" | perl -pe '
+			s/\e\[[0-9;?]*[ -\/]*[@-~]//g;
+			s/\e\][^\a]*(?:\a|\e\\)//g;
+			s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]//g;
+		'
+	)"
+
+	if [ -z "$(printf '%s\n' "$clean_output" | "$sed_cmd" '/^[[:space:]]*$/d' | head -n 1)" ]; then
 		return 0
 	fi
 
+	box_width="${COLUMNS:-}"
+	if ! [[ "$box_width" =~ ^[0-9]+$ ]] || [ "$box_width" -le 0 ]; then
+		if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
+			box_width="$(tput cols 2>/dev/null || true)"
+		fi
+	fi
+	if ! [[ "$box_width" =~ ^[0-9]+$ ]] || [ "$box_width" -le 0 ]; then
+		box_width=96
+	fi
+
+	box_width=$(( box_width - ${#block_indent} ))
+	[ "$box_width" -lt 12 ] && box_width=12
+	content_width=$(( box_width - 2 ))
+	[ "$content_width" -lt 1 ] && content_width=1
+
 	printf "Output        :\n"
 	while IFS= read -r line || [ -n "$line" ]; do
-		output_lines+=( "$line" )
-		[ ${#line} -gt "$width" ] && width=${#line}
-	done <<<"$output"
+		if [ -z "$line" ]; then
+			printf -v padded '%-*s' "$box_width" "  "
+			printf '%s%s\n' "$block_indent" "$(color output "$padded")"
+			continue
+		fi
 
-	for line in "${output_lines[@]}"; do
-		printf -v padded '%-*s' $(( width + 2 )) " $line "
-		printf '%s%s\n' "$block_indent" "$(color output "$padded")"
-	done
+		while IFS= read -r wrapped_line || [ -n "$wrapped_line" ]; do
+			printf -v padded '%-*s' "$box_width" " $wrapped_line "
+			printf '%s%s\n' "$block_indent" "$(color output "$padded")"
+		done < <(printf '%s\n' "$line" | fold -s -w "$content_width")
+	done <<<"$clean_output"
 }
 
 target_label_suffix() {
