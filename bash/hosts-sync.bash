@@ -881,6 +881,135 @@ record_sync_result() {
 	printf '%s\t%s\t%s\t%s\n' "$host" "$target_label" "$state" "$status_text" >>"$host_result_file"
 }
 
+shell_single_quote() {
+	printf "'"
+	printf '%s' "$1" | "$sed_cmd" "s/'/'\\\\''/g"
+	printf "'"
+}
+
+detached_remote_disconnect_command() {
+	local cmd="$1"
+	local normalized=""
+	local delayed=""
+	local command_name=""
+	local command_check=""
+
+	normalized="$(printf '%s\n' "$cmd" | trim)"
+	case "$normalized" in
+		reboot|reboot\ *|\
+		/sbin/reboot|/sbin/reboot\ *|\
+		/usr/sbin/reboot|/usr/sbin/reboot\ *|\
+		systemctl\ reboot|systemctl\ reboot\ *|\
+		/bin/systemctl\ reboot|/bin/systemctl\ reboot\ *|\
+		/usr/bin/systemctl\ reboot|/usr/bin/systemctl\ reboot\ *|\
+		shutdown\ -r|shutdown\ -r\ *|\
+		/sbin/shutdown\ -r|/sbin/shutdown\ -r\ *|\
+		/usr/sbin/shutdown\ -r|/usr/sbin/shutdown\ -r\ *|\
+		poweroff|poweroff\ *|\
+		/sbin/poweroff|/sbin/poweroff\ *|\
+		/usr/sbin/poweroff|/usr/sbin/poweroff\ *|\
+		systemctl\ poweroff|systemctl\ poweroff\ *|\
+		/bin/systemctl\ poweroff|/bin/systemctl\ poweroff\ *|\
+		/usr/bin/systemctl\ poweroff|/usr/bin/systemctl\ poweroff\ *|\
+		halt|halt\ *|\
+		/sbin/halt|/sbin/halt\ *|\
+		/usr/sbin/halt|/usr/sbin/halt\ *)
+			delayed="sleep 1; $normalized"
+			command_name="${normalized%% *}"
+			case "$command_name" in
+				*/*) command_check="[ -x $(shell_single_quote "$command_name") ]" ;;
+				*)   command_check="command -v $(shell_single_quote "$command_name") >/dev/null 2>&1" ;;
+			esac
+			printf '%s && nohup sh -c %s >/dev/null 2>&1 </dev/null &' "$command_check" "$(shell_single_quote "$delayed")"
+			return 0
+			;;
+	esac
+
+	return 1
+}
+
+short_error_text() {
+	local output="$1"
+	local status="$2"
+	local short_err=""
+
+	short_err="$(
+		printf '%s\n' "$output" \
+		| "$sed_cmd" '/^[[:space:]]*$/d' \
+		| head -n 2 \
+		| tr '\n' '; ' \
+		| "$sed_cmd" 's/[;[:space:]]*$//'
+	)"
+	[ -z "$short_err" ] && short_err="non-zero exit $status"
+	printf '%s\n' "$short_err"
+}
+
+is_transient_remote_error() {
+	local status="$1"
+	local output="$2"
+	local clean_output=""
+
+	clean_output="$(
+		printf '%s\n' "$output" \
+		| "$sed_cmd" '/^[[:space:]]*$/d'
+	)"
+
+	if printf '%s\n' "$clean_output" | grep -q '__SYNC_SKIP_PARENT_MISSING__:'; then
+		return 1
+	fi
+
+	if printf '%s\n' "$clean_output" | grep -qiE 'Permission denied|Host key verification failed|Could not resolve hostname|Name or service not known|No such file or directory'; then
+		return 1
+	fi
+
+	if [ "$status" -eq 255 ] && [ -z "$clean_output" ]; then
+		return 0
+	fi
+
+	printf '%s\n' "$clean_output" | grep -qiE 'Connection (closed|reset|refused|timed out)|closed by remote host|Operation timed out|No route to host|Network is unreachable|kex_exchange_identification|ssh_exchange_identification|banner exchange|Broken pipe|connection unexpectedly closed|protocol data stream \(code 12\)|unexplained error \(code 255\)'
+}
+
+run_command_with_retries() {
+	local cmd="$1"
+	local label="$2"
+	local max_attempts="${HOSTS_SYNC_RETRIES:-3}"
+	local delay="${HOSTS_SYNC_RETRY_DELAY:-1}"
+	local attempt=1
+	local output=""
+	local status=0
+
+	case "$max_attempts" in
+		""|*[!0-9]*) max_attempts=3 ;;
+	esac
+	case "$delay" in
+		""|*[!0-9]*) delay=1 ;;
+	esac
+	[ "$max_attempts" -lt 1 ] && max_attempts=1
+
+	while :; do
+		output=$(eval "$cmd" 2>&1)
+		status=$?
+
+		retry_output="$output"
+		retry_status="$status"
+		retry_attempts="$attempt"
+
+		[ "$status" -eq 0 ] && return 0
+
+		if [ "$attempt" -ge "$max_attempts" ] || ! is_transient_remote_error "$status" "$output"; then
+			return 1
+		fi
+
+		printf "Retry         : %s transient SSH error; attempt %s/%s failed, retrying attempt %s/%s in %ss\n" \
+			"$(color yellow "$label")" "$attempt" "$max_attempts" "$(( attempt + 1 ))" "$max_attempts" "$delay"
+		[ "$delay" -gt 0 ] && sleep "$delay"
+		attempt=$(( attempt + 1 ))
+		if [ "$delay" -gt 0 ] && [ "$delay" -lt 8 ]; then
+			delay=$(( delay * 2 ))
+		fi
+	done
+}
+
 print_command_output() {
 	local output="$1"
 	local clean_output=""
@@ -973,9 +1102,10 @@ sync_results_need_target_labels() {
 }
 
 print_sync_results() {
-	local i result_file host target_label state status_text host_label state_label saw_result show_target_labels
+	local i result_file host target_label state status_text host_label state_label saw_result show_target_labels has_error
 	saw_result=0
 	show_target_labels=0
+	has_error=0
 
 	if sync_results_need_target_labels; then
 		show_target_labels=1
@@ -1003,7 +1133,10 @@ print_sync_results() {
 			case "$state" in
 				success) state_label="$(badge success "success")" ;;
 				skipped) state_label="$(badge warning "warning")" ;;
-				error) state_label="$(badge danger "error")" ;;
+				error)
+					state_label="$(badge danger "error")"
+					has_error=1
+					;;
 				*) state_label="$(badge neutral "$state")" ;;
 			esac
 
@@ -1015,6 +1148,8 @@ print_sync_results() {
 		printf "%s\n" "$(color yellow "No per-host sync results were recorded.")"
 	fi
 	printf "\n"
+
+	return "$has_error"
 }
 
 # Per-host processing
@@ -1320,6 +1455,8 @@ process_host() {
 	fi
 
 	# In full/module mode we only sync targets that already exist remotely.
+	local remote_dir_check_output=""
+	local remote_dir_check_status=0
 	remote_dir_exists() {
 		local remote_path="$1"
 		local check_cmd=""
@@ -1328,20 +1465,32 @@ process_host() {
 		else
 			check_cmd="$ssh_cmd$local_sshport_opt -T $local_sshnocheck root@$ssh_host \"test -d '$remote_path'\""
 		fi
-		eval "$check_cmd" >/dev/null 2>&1
+		remote_dir_check_output=""
+		remote_dir_check_status=0
+		if run_command_with_retries "$check_cmd" "directory check"; then
+			return 0
+		fi
+		remote_dir_check_output="$retry_output"
+		remote_dir_check_status="$retry_status"
+		if [ "$retry_status" -eq 1 ] && [ -z "$(printf '%s\n' "$retry_output" | "$sed_cmd" '/^[[:space:]]*$/d')" ]; then
+			return 1
+		fi
+		return 2
 	}
 
 	# SSH-only commands
 	if [ -n "$sshcmd" ]; then
 		local sshcmdprelocal=""
 		local sshcmdlocal="$sshcmd"
+		local detached_cmd=""
+		local detached_sshcmd=0
 
 		# Remote package upgrade
 		if printf '%s\n' "$sshcmd" | grep -q 'upgrade-packages'; then
 			if printf '%s\n' "$target" | grep -q 'libexec'; then
-				sshcmdlocal="systemctl restart chronyd ; sleep 15 ; dnf clean all ; dnf -y upgrade > /root/package-updates.log 2>&1"
+				sshcmdlocal="systemctl restart chronyd >/dev/null 2>&1 || true ; sleep 15 ; dnf clean all > /root/package-updates.log 2>&1 ; dnf -y upgrade >> /root/package-updates.log 2>&1"
 			else
-				sshcmdlocal="systemctl restart systemd-timesyncd ; systemctl restart chronyd ; sleep 15 ; apt-get clean ; apt-get update > /root/package-updates.log 2>&1 ; apt-get -y upgrade --with-new-pkgs --allow-change-held-packages --fix-missing -o APT::Get::Always-Include-Phased-Updates=true >> /root/package-updates.log 2>&1 ; apt -y autoremove >> /root/package-updates.log 2>&1"
+				sshcmdlocal="{ systemctl restart systemd-timesyncd >/dev/null 2>&1 || systemctl restart chronyd >/dev/null 2>&1 || true; } ; sleep 15 ; apt-get clean > /root/package-updates.log 2>&1 ; apt-get update >> /root/package-updates.log 2>&1 && apt-get -y upgrade --with-new-pkgs --allow-change-held-packages --fix-missing -o APT::Get::Always-Include-Phased-Updates=true >> /root/package-updates.log 2>&1 && apt -y autoremove >> /root/package-updates.log 2>&1"
 			fi
 		fi
 
@@ -1368,7 +1517,12 @@ process_host() {
 
 		# Time sync
 		if printf '%s\n' "$sshcmd" | grep -q 'sync-time'; then
-			sshcmdlocal="systemctl restart systemd-timesyncd ; systemctl restart chronyd"
+			sshcmdlocal="systemctl restart systemd-timesyncd >/dev/null 2>&1 || systemctl restart chronyd >/dev/null 2>&1"
+		fi
+
+		if detached_cmd="$(detached_remote_disconnect_command "$sshcmdlocal")"; then
+			sshcmdlocal="$detached_cmd"
+			detached_sshcmd=1
 		fi
 
 		local cmd=""
@@ -1385,25 +1539,29 @@ process_host() {
 		fi
 		printf "Command used  : %s\n" "$(color dim "$cmd_print")"
 
-		local ssh_output ssh_status short_err
-		ssh_output=$(eval "$cmd" 2>&1)
-		ssh_status=$?
+		local ssh_output ssh_status ssh_attempts short_err
+		run_command_with_retries "$cmd" "remote command"
+		ssh_output="$retry_output"
+		ssh_status="$retry_status"
+		ssh_attempts="$retry_attempts"
 		print_command_output "$ssh_output"
 
 		if [ "$ssh_status" -eq 0 ]; then
-			status_text="Success"
+			if [ "$detached_sshcmd" -eq 1 ]; then
+				if [ "$ssh_attempts" -gt 1 ]; then
+					status_text="Success (queued after $ssh_attempts attempts; command continues after SSH disconnect)"
+				else
+					status_text="Success (queued; command continues after SSH disconnect)"
+				fi
+			elif [ "$ssh_attempts" -gt 1 ]; then
+				status_text="Success (after $ssh_attempts attempts)"
+			else
+				status_text="Success"
+			fi
 			printf "Status        : %s\n\n" "$(color green "$status_text")"
 			record_sync_result "$server" "command" "success" "$status_text"
 		else
-			short_err="$(
-				printf '%s\n' "$ssh_output" \
-				| "$sed_cmd" '/^[[:space:]]*$/d' \
-				| head -n 2 \
-				| tr '\n' '; ' \
-				| "$sed_cmd" 's/[;[:space:]]*$//'
-			)"
-			[ -z "$short_err" ] && short_err="non-zero exit $ssh_status"
-		
+			short_err="$(short_error_text "$ssh_output" "$ssh_status")"
 			status_text="Error: $short_err"
 			printf "Status        : %s\n\n" "$(color red "$status_text")"
 			record_sync_result "$server" "command" "error" "$status_text"
@@ -1412,14 +1570,24 @@ process_host() {
 	fi
 
 	# Rsync sync
-	local rsync_output rsync_status short_err
+	local rsync_output rsync_status rsync_attempts short_err dir_status
 	local cmdsync cmd_print rsyncpathguard skipped_parent
 
 	printf "\nSyncing to    : %s %s\n" "$(color cyan "$server")" "$(target_label_suffix "Webmin")"
-	if [ "$mode_label" != "single" ] && ! remote_dir_exists "$targetfull"; then
+	dir_status=0
+	if [ "$mode_label" != "single" ]; then
+		remote_dir_exists "$targetfull"
+		dir_status=$?
+	fi
+	if [ "$mode_label" != "single" ] && [ "$dir_status" -eq 1 ]; then
 		status_text="Skipped: $targetfull does not exist on remote ($mode_label mode requires existing target directory)."
 		printf "Status        : %s\n\n" "$(color yellow "$status_text")"
 		record_sync_result "$server" "Webmin" "skipped" "$status_text"
+	elif [ "$mode_label" != "single" ] && [ "$dir_status" -ne 0 ]; then
+		short_err="$(short_error_text "$remote_dir_check_output" "$remote_dir_check_status")"
+		status_text="Error: Could not verify $targetfull on remote: $short_err"
+		printf "Status        : %s\n\n" "$(color red "$status_text")"
+		record_sync_result "$server" "Webmin" "error" "$status_text"
 	else
 		rsyncpathguard=""
 		if [ "$mode_label" = "single" ]; then
@@ -1433,11 +1601,17 @@ process_host() {
 		fi
 		printf "Command used  : %s\n" "$(color dim "$cmd_print")"
 
-		rsync_output=$(eval "$cmdsync" 2>&1)
-		rsync_status=$?
+		run_command_with_retries "$cmdsync" "rsync"
+		rsync_output="$retry_output"
+		rsync_status="$retry_status"
+		rsync_attempts="$retry_attempts"
 
 		if [ "$rsync_status" -eq 0 ]; then
-			status_text="Success"
+			if [ "$rsync_attempts" -gt 1 ]; then
+				status_text="Success (after $rsync_attempts attempts)"
+			else
+				status_text="Success"
+			fi
 			printf "Status        : %s\n\n" "$(color green "$status_text")"
 			record_sync_result "$server" "Webmin" "success" "$status_text"
 		elif [ "$mode_label" = "single" ] && printf '%s\n' "$rsync_output" | grep -q '__SYNC_SKIP_PARENT_MISSING__:'; then
@@ -1452,15 +1626,7 @@ process_host() {
 			printf "Status        : %s\n\n" "$(color yellow "$status_text")"
 			record_sync_result "$server" "Webmin" "skipped" "$status_text"
 		else
-			short_err="$(
-				printf '%s\n' "$rsync_output" \
-				| "$sed_cmd" '/^[[:space:]]*$/d' \
-				| head -n 2 \
-				| tr '\n' '; ' \
-				| "$sed_cmd" 's/[;[:space:]]*$//'
-			)"
-			[ -z "$short_err" ] && short_err="non-zero exit $rsync_status"
-		
+			short_err="$(short_error_text "$rsync_output" "$rsync_status")"
 			status_text="Error: $short_err"
 			printf "Status        : %s\n\n" "$(color red "$status_text")"
 			record_sync_result "$server" "Webmin" "error" "$status_text"
@@ -1469,10 +1635,20 @@ process_host() {
 
 	if [ -n "$target_usermin" ]; then
 		printf "Syncing to    : %s %s\n" "$(color cyan "$server")" "$(target_label_suffix "Usermin")"
-		if [ "$mode_label" != "single" ] && ! remote_dir_exists "$targetfull_usermin"; then
+		dir_status=0
+		if [ "$mode_label" != "single" ]; then
+			remote_dir_exists "$targetfull_usermin"
+			dir_status=$?
+		fi
+		if [ "$mode_label" != "single" ] && [ "$dir_status" -eq 1 ]; then
 			status_text="Skipped: $targetfull_usermin does not exist on remote ($mode_label mode requires existing target directory)."
 			printf "Status        : %s\n\n" "$(color yellow "$status_text")"
 			record_sync_result "$server" "Usermin" "skipped" "$status_text"
+		elif [ "$mode_label" != "single" ] && [ "$dir_status" -ne 0 ]; then
+			short_err="$(short_error_text "$remote_dir_check_output" "$remote_dir_check_status")"
+			status_text="Error: Could not verify $targetfull_usermin on remote: $short_err"
+			printf "Status        : %s\n\n" "$(color red "$status_text")"
+			record_sync_result "$server" "Usermin" "error" "$status_text"
 		else
 			rsyncpathguard=""
 			if [ "$mode_label" = "single" ]; then
@@ -1486,11 +1662,17 @@ process_host() {
 			fi
 			printf "Command used  : %s\n" "$(color dim "$cmd_print")"
 
-			rsync_output=$(eval "$cmdsync" 2>&1)
-			rsync_status=$?
+			run_command_with_retries "$cmdsync" "rsync"
+			rsync_output="$retry_output"
+			rsync_status="$retry_status"
+			rsync_attempts="$retry_attempts"
 
 			if [ "$rsync_status" -eq 0 ]; then
-				status_text="Success"
+				if [ "$rsync_attempts" -gt 1 ]; then
+					status_text="Success (after $rsync_attempts attempts)"
+				else
+					status_text="Success"
+				fi
 				printf "Status        : %s\n\n" "$(color green "$status_text")"
 				record_sync_result "$server" "Usermin" "success" "$status_text"
 			elif [ "$mode_label" = "single" ] && printf '%s\n' "$rsync_output" | grep -q '__SYNC_SKIP_PARENT_MISSING__:'; then
@@ -1505,8 +1687,8 @@ process_host() {
 				printf "Status        : %s\n\n" "$(color yellow "$status_text")"
 				record_sync_result "$server" "Usermin" "skipped" "$status_text"
 			else
-				short_err="$(printf '%s\n' "$rsync_output" | head -n 2 | tr '\n' '; ' | $sed_cmd 's/; $//')"
-				status_text="Error: ${short_err:-non-zero exit $rsync_status}"
+				short_err="$(short_error_text "$rsync_output" "$rsync_status")"
+				status_text="Error: $short_err"
 				printf "Status        : %s\n\n" "$(color red "$status_text")"
 				record_sync_result "$server" "Usermin" "error" "$status_text"
 			fi
@@ -1567,9 +1749,10 @@ for i in "${!job_pids[@]}"; do
 done
 
 print_sync_results
+sync_exit_status=$?
 
 for i in "${!job_results[@]}"; do
 	rm -f "${job_results[$i]}"
 done
 
-exit 0
+exit "$sync_exit_status"
