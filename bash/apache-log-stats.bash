@@ -79,6 +79,7 @@ color() {
 		magenta) code=95 ;;
 		cyan)    code=96 ;;
 		gray)    code=90 ;;
+		dim_gray) code='2;90' ;;
 		*)       printf '%s' "$s"; return ;;
 	esac
 
@@ -1246,7 +1247,7 @@ geoip2_lookup_ip() {
 
 	db=$(geoip2_db_file)
 	if [ -z "$db" ] || ! have_cmd mmdblookup; then
-		printf '??\tUnknown'
+		printf '%s\t%s' '--' 'Unresolved'
 		return
 	fi
 
@@ -1256,8 +1257,8 @@ geoip2_lookup_ip() {
 	name=$(mmdblookup --file "$db" --ip "$ip" country names en \
 		2>/dev/null | mmdb_first_string || true)
 
-	[ -z "$cc" ] && cc="??"
-	[ -z "$name" ] && name="Unknown"
+	[ -z "$cc" ] && cc="--"
+	[ -z "$name" ] && name="Unresolved"
 	printf '%s\t%s' "$cc" "$name"
 }
 
@@ -1266,14 +1267,18 @@ geoip_parse() {
 	local out="$1"
 
 	out=${out#*: }
+	if [[ "$out" != *,* ]]; then
+		printf '%s\t%s' '--' 'Unresolved'
+		return
+	fi
+
 	local cc="${out%%,*}"
 	local name="${out#*,}"
 	name="${name# }"
 
-	[ -z "$cc" ] && cc="??"
-	[ "$cc" = "--" ] && cc="??"
-	[ -z "$name" ] && name="Unknown"
-	[ "$name" = "N/A" ] && name="Unknown"
+	[ -z "$cc" ] && cc="--"
+	[ -z "$name" ] && name="Unresolved"
+	[ "$name" = "N/A" ] && name="Unresolved"
 
 	printf '%s\t%s' "$cc" "$name"
 }
@@ -1295,6 +1300,28 @@ geoip_lookup_ip() {
 	fi
 
 	geoip2_lookup_ip "$ip"
+}
+
+# Format a country code, distinguishing failed lookups from real codes
+geoip_display_code() {
+	local cc="$1"
+
+	if [ "$cc" = "--" ]; then
+		pad_color 2 dim_gray "$cc"
+	else
+		pad_color 2 cyan "$cc"
+	fi
+}
+
+# Format a country name, distinguishing failed lookups from real names
+geoip_display_name() {
+	local name="$1"
+
+	if [ "$name" = "Unresolved" ]; then
+		color dim_gray "[unresolved]"
+	else
+		color dim "$name"
+	fi
 }
 
 # Print GeoIP sections for the top IP list (fast and useful) by reading the
@@ -1364,8 +1391,8 @@ print_geoip_sections() {
 		printf "  %s  %s  %s %s\n" \
 			"$(pad_color 8 green "$(human_count "$count")")" \
 			"$(pad_color_left "$max_ip_len" dim "$ip")" \
-			"$(pad_color 2 cyan "$cc")" \
-			"$(color dim "$name")"
+			"$(geoip_display_code "$cc")" \
+			"$(geoip_display_name "$name")"
 	done < "$meta_file"
 
 	printf "\n"
@@ -1379,8 +1406,8 @@ print_geoip_sections() {
 	} | sort -rn | while IFS=$'\t' read -r sum cc name; do
 		printf "  %s  %s %s\n" \
 			"$(pad_color 8 green "$(human_count "$sum")")" \
-			"$(pad_color 2 cyan "$cc")" \
-			"$(color dim "$name")"
+			"$(geoip_display_code "$cc")" \
+			"$(geoip_display_name "$name")"
 	done
 
 	printf "\n%s\n" \
