@@ -36,7 +36,7 @@
 #
 #   # Analyze matching requests for one authenticated username
 #   ./apache-log-stats.bash -i /var/log/apache2/access.log \
-#     --filter-username user --filter-path /vm/6/pro \
+#     --filter-username user --filter-path /repodata \
 #     --filter-query serial --filter-status 200
 #
 # Exit codes:
@@ -283,39 +283,67 @@ usage_row() {
 	printf '  %-35s  %s\n' "$1" "$2" >&2
 }
 
+# Join arguments with a caller-supplied separator
+join_values() {
+	local separator="$1"
+	shift
+
+	local value joined=""
+	for value in "$@"; do
+		joined+="${joined:+$separator}$value"
+	done
+	printf '%s' "$joined"
+}
+
+# Print one or more filter values under a single report label
+print_filter_values() {
+	local label="$1"
+	shift
+
+	local value
+	for value in "$@"; do
+		printf "%-16s%s\n" "$label" "$(color cyan "$value")"
+		label=""
+	done
+}
+
 # Print help and exit
 usage() {
 	printf 'Usage: %s -i <log-file> [-i <log-file> ...] [options]\n' \
 		"$(basename "$0")" >&2
 	printf '\nOptions:\n' >&2
 
-	usage_row "-i,  --input <log-file>" \
-		"Log file to parse (repeatable)"
+	usage_row "-i,  --input <log-file>*" \
+		"Log file to parse"
 	usage_row "-t,  --type <type>" \
 		"access | error | auto (default: auto)"
 	usage_row "-n,  --number [<rows>]" \
 		"Rows to show (default: 25):"
-	usage_row "" " -n       show all rows"
-	usage_row "" " -n 100   show 100 rows"
+	usage_row "" "  -n       show all rows"
+	usage_row "" "  -n 100   show 100 rows"
 
 	printf '\n' >&2
 	usage_row "-R,  --rotated [<count>]" \
 		"Include rotated siblings per input:"
-	usage_row "" " -R     include all rotated logs"
-	usage_row "" " -R 5   include newest 5 rotated logs"
+	usage_row "" "  -R     include all rotated logs"
+	usage_row "" "  -R 5   include newest 5 rotated logs"
 
 	printf '\n' >&2
-	usage_row "-fU, --filter-username [<username>]" \
-		"Filter by authenticated username:"
-	usage_row "" " -fU        any authenticated username; list unique matches"
-	usage_row "" " -fU user   exact username"
+	usage_row "-fU, --filter-username <username>*" \
+		"Filter by auth state or username:"
+	usage_row "" "  -fU        any authenticated username"
+	usage_row "" "  -fU -      unauthenticated requests"
+	usage_row "" "  -fU user   exact username"
 
 	printf '\n' >&2
-	usage_row "-fP, --filter-path <text>" \
-		"Path contains <text>"
-	usage_row "-fQ, --filter-query <text>" \
+	usage_row "-fP, --filter-path <pattern>*" \
+		"Path contains text or wildcard pattern:"
+	usage_row "" "  -fP /repodata            literal string"
+	usage_row "" "  -fP '/dist?/*.zst'       wildcard"
+	usage_row "" "  -fP '*.rpm' -fP '*.deb'  either pattern"
+	usage_row "-fQ, --filter-query <text>*" \
 		"Query contains <text>"
-	usage_row "-fS, --filter-status <code>" \
+	usage_row "-fS, --filter-status <code>*" \
 		"HTTP status is <code> (100-599)"
 
 	printf '\n' >&2
@@ -323,6 +351,7 @@ usage() {
 		"Show user-agent stats"
 	usage_row "     --progress" \
 		"Show progress meter (default: auto)"
+	usage_row "     --no-top" "Hide all top tables output"
 	usage_row "     --no-geoip" "Disable GeoIP output"
 	usage_row "     --no-color" "Disable colors"
 	usage_row "-h,  --help" "Show help"
@@ -708,12 +737,13 @@ run_access_stats() {
 	local top_n="$1"
 	local meta_file="$2"
 	local with_uas="$3"
-	local username_filter="$4"
+	local username_filters="$4"
 	local username_any="$5"
-	local path_contains="$6"
-	local query_contains="$7"
-	local status_filter="$8"
+	local path_filters="$6"
+	local query_filters="$7"
+	local status_filters="$8"
 	local match_count_file="$9"
+	local show_top="${10:-1}"
 
 	need_cmd gawk
 
@@ -722,11 +752,12 @@ run_access_stats() {
 		-v TOP="$top_n" \
 		-v META="$meta_file" \
 		-v WITH_UA="$with_uas" \
-		-v PATH_CONTAINS="$path_contains" \
-		-v QUERY_CONTAINS="$query_contains" \
-		-v USERNAME_FILTER="$username_filter" \
+		-v PATH_FILTERS="$path_filters" \
+		-v QUERY_FILTERS="$query_filters" \
+		-v USERNAME_FILTERS="$username_filters" \
 		-v USERNAME_ANY="$username_any" \
-		-v STATUS_FILTER="$status_filter" \
+		-v STATUS_FILTERS="$status_filters" \
+		-v SHOW_TOP="$show_top" \
 		-v MATCH_COUNT_FILE="$match_count_file" '
 function trim_dot0(s) {
 	if (s ~ /\.0[kMGTP]$/) sub(/\.0/, "", s)
@@ -837,12 +868,84 @@ function print_table_by_size(title, cnt, bytes, n,   k,i,b,lbl) {
 	}
 	delete PROCINFO["sorted_in"]
 }
+function glob_regex(glob,   re,i,c) {
+	re = "^"
+	for (i = 1; i <= length(glob); i++) {
+		c = substr(glob, i, 1)
+		if (c == "*")
+			re = re ".*"
+		else if (c == "?")
+			re = re "."
+		else {
+			if (index("\\.^$|()[]{}+", c) > 0)
+				re = re "\\"
+			re = re c
+		}
+	}
+	return re "$"
+}
+function load_filters(raw, filters, lowercase,   count,i) {
+	delete filters
+	if (raw == "") return 0
+
+	count = split(raw, filters, "\034")
+	if (lowercase) {
+		for (i = 1; i <= count; i++)
+			filters[i] = tolower(filters[i])
+	}
+	return count
+}
+function path_matches(value, filters, is_glob, regexes, count,   i,lower) {
+	if (count == 0) return 1
+
+	lower = tolower(value)
+	for (i = 1; i <= count; i++) {
+		if (is_glob[i]) {
+			if (lower ~ regexes[i]) return 1
+		} else if (index(lower, filters[i]) > 0)
+			return 1
+	}
+	return 0
+}
+function contains_any_ci(value, filters, count,   i,lower) {
+	if (count == 0) return 1
+
+	lower = tolower(value)
+	for (i = 1; i <= count; i++) {
+		if (index(lower, filters[i]) > 0) return 1
+	}
+	return 0
+}
+function exact_matches(value, filters, count,   i) {
+	if (count == 0) return 1
+
+	for (i = 1; i <= count; i++) {
+		if (value == filters[i]) return 1
+	}
+	return 0
+}
+function username_matches(value, filters, count,   i) {
+	if (USERNAME_ANY == 1 && value != "-") return 1
+	if (count == 0) return (USERNAME_ANY != 1)
+
+	for (i = 1; i <= count; i++) {
+		if (value == filters[i]) return 1
+	}
+	return 0
+}
 
 BEGIN {
 	total = 0
 	total_bytes = 0
-	path_filter = tolower(PATH_CONTAINS)
-	query_filter = tolower(QUERY_CONTAINS)
+	path_filter_count = load_filters(PATH_FILTERS, path_filters, 1)
+	for (i = 1; i <= path_filter_count; i++) {
+		path_filter_is_glob[i] = (path_filters[i] ~ /[*?]/)
+		if (path_filter_is_glob[i])
+			path_filter_regex[i] = glob_regex(path_filters[i])
+	}
+	query_filter_count = load_filters(QUERY_FILTERS, query_filters, 1)
+	username_filter_count = load_filters(USERNAME_FILTERS, username_filters, 0)
+	status_filter_count = load_filters(STATUS_FILTERS, status_filters, 0)
 }
 
 {
@@ -905,23 +1008,20 @@ BEGIN {
 	}
 
 	# Applying filters before counters keeps every report section scoped to the
-	# same matching requests. Path/query filters are literal and case-insensitive;
-	# the authenticated username and HTTP status are exact matches.
-	if (path_filter != "" && index(tolower(uri), path_filter) == 0)
-		next
-	if (query_filter != "" && index(tolower(query), query_filter) == 0)
-		next
-	if (USERNAME_ANY == 1) {
-		if (username == "-") next
-	} else if (USERNAME_FILTER != "" && username != USERNAME_FILTER)
-		next
-	if (STATUS_FILTER != "" && status != STATUS_FILTER)
-		next
+	# same matching requests. Values within one filter type are ORed; different
+	# filter types are ANDed. Plain path filters are case-insensitive literal
+	# substrings; * or ? makes one a case-insensitive whole-path wildcard.
+	if (!path_matches(uri, path_filters, path_filter_is_glob,
+		path_filter_regex, path_filter_count)) next
+	if (!contains_any_ci(query, query_filters, query_filter_count)) next
+	if (!username_matches(username, username_filters,
+		username_filter_count)) next
+	if (!exact_matches(status, status_filters, status_filter_count)) next
 
 	total++
 
 	ips[ip]++
-	if (USERNAME_ANY == 1) usernames[username]++
+	if (USERNAME_ANY == 1 && username != "-") usernames[username]++
 
 	# Track min/max timestamp using a cheap sortable key
 	if (t0 != "" && tz0 != "") {
@@ -1058,34 +1158,37 @@ END {
 	print_table("Busiest hours", per_hour,
 		(TOP == 0 ? 0 : (TOP < 12 ? TOP : 12)))
 
-	print_table("Top IPs", ips, TOP)
+	if (SHOW_TOP == 1)
+		print_table("Top IPs", ips, TOP)
 	emit_top_ips(ips, TOP)
-	print_table("Top IPs by bandwidth (bytes summed)", bytes_ip, TOP)
+	if (SHOW_TOP == 1)
+		print_table("Top IPs by bandwidth (bytes summed)", bytes_ip, TOP)
 
 	if (USERNAME_ANY == 1)
 		print_table("Matched usernames", usernames, 0)
 
-	print_table_size("Top URLs by count", uris, url_b, TOP)
-	print_table_by_size("Top URLs by size", uris, url_b, TOP)
-	print_table_size_queryonly("Top URLs with query", uris_full, url_full_b, TOP)
-
-	print_table("Top status codes", statuses, TOP)
+	if (SHOW_TOP == 1) {
+		print_table_size("Top URLs by count", uris, url_b, TOP)
+		print_table_by_size("Top URLs by size", uris, url_b, TOP)
+		print_table_size_queryonly("Top URLs with query",
+			uris_full, url_full_b, TOP)
+		print_table("Top status codes", statuses, TOP)
+	}
 
 	printf "@@SUB@@ Status classes\n"
 	PROCINFO["sorted_in"] = "@val_num_desc"
 	for (k in classes) printf "  %8s  %s\n", hn(classes[k]), k
 	delete PROCINFO["sorted_in"]
 
-	print_table("Top methods", methods, TOP)
-	print_table_size("Top 404 URLs", nf, nf_b, TOP)
-	print_table("Top 5xx URLs", sx, TOP)
+	if (SHOW_TOP == 1) {
+		print_table("Top methods", methods, TOP)
+		print_table_size("Top 404 URLs", nf, nf_b, TOP)
+		print_table("Top 5xx URLs", sx, TOP)
+		print_table("Top referrers", refs, TOP)
 
-	# Top referrers (always)
-	print_table("Top referrers", refs, TOP)
-	
-	# Top user-agents (only if enabled)
-	if (WITH_UA == 1)
-		print_table("Top user-agents", uas, TOP)
+		if (WITH_UA == 1)
+			print_table("Top user-agents", uas, TOP)
+	}
 	
 	# Unique counts (always printed last)
 	if (WITH_UA == 1)
@@ -1423,15 +1526,16 @@ main() {
 	local number_all=0
 	local rotated_depth=0
 	local show_progress=0
+	local show_top=1
 	local geoip_disabled=0
 	local with_uas=0
-	local username_filter=""
 	local username_any=0
-	local path_contains=""
-	local query_contains=""
-	local status_filter=""
 
 	local -a inputs=()
+	local -a username_filters=()
+	local -a path_filters=()
+	local -a query_filters=()
+	local -a status_filters=()
 
 	# Parse CLI args. -i/--input can be repeated and keeps order
 	while [ "$#" -gt 0 ]; do
@@ -1465,35 +1569,39 @@ main() {
 				fi
 				;;
 			-fU|--filter-username)
-				if [ "${2:-}" != "" ] && [[ "${2:-}" != -* ]]; then
-					username_filter="$2"
-					username_any=0
+				if [ "${2:-}" = "-" ]; then
+					username_filters+=("-")
+					shift
+				elif [ "${2:-}" != "" ] && [[ "${2:-}" != -* ]]; then
+					username_filters+=("$2")
 					shift
 				else
-					username_filter=""
 					username_any=1
 				fi
 				;;
 			-fP|--filter-path)
 				shift
 				[ "${1:-}" = "" ] && usage
-				path_contains="$1"
+				path_filters+=("$1")
 				;;
 			-fQ|--filter-query)
 				shift
 				[ "${1:-}" = "" ] && usage
-				query_contains="$1"
+				query_filters+=("$1")
 				;;
 			-fS|--filter-status)
 				shift
 				[ "${1:-}" = "" ] && usage
-				status_filter="$1"
+				status_filters+=("$1")
 				;;
 			--user-agents)
 				with_uas=1
 				;;
 			--progress)
 				show_progress=1
+				;;
+			--no-top)
+				show_top=0
 				;;
 			--no-geoip)
 				geoip_disabled=1
@@ -1521,14 +1629,15 @@ main() {
 
 	[ "${#inputs[@]}" -eq 0 ] && usage
 
-	if [ -n "$status_filter" ] \
-		&& ! [[ "$status_filter" =~ ^[1-5][0-9]{2}$ ]]
-	then
-		printf '%s\n' \
-			"$(color red \
-				"Error: bad --filter-status value: $status_filter")" >&2
-		exit 1
-	fi
+	local filter_value
+	for filter_value in "${status_filters[@]}"; do
+		if ! [[ "$filter_value" =~ ^[1-5][0-9]{2}$ ]]; then
+			printf '%s\n' \
+				"$(color red \
+					"Error: bad --filter-status value: $filter_value")" >&2
+			exit 1
+		fi
+	done
 
 	need_cmd gzip
 	need_cmd gawk
@@ -1562,10 +1671,10 @@ main() {
 
 	local filters_active=0
 	if [ "$username_any" -eq 1 ] \
-		|| [ -n "$username_filter" ] \
-		|| [ -n "$path_contains" ] \
-		|| [ -n "$query_contains" ] \
-		|| [ -n "$status_filter" ]
+		|| [ "${#username_filters[@]}" -gt 0 ] \
+		|| [ "${#path_filters[@]}" -gt 0 ] \
+		|| [ "${#query_filters[@]}" -gt 0 ] \
+		|| [ "${#status_filters[@]}" -gt 0 ]
 	then
 		filters_active=1
 	fi
@@ -1640,6 +1749,9 @@ main() {
 	local number_desc="$number"
 	[ "$number_all" -eq 1 ] && number_desc="all"
 	printf "%-16s%s\n" "Top entries:" "$(color cyan "$number_desc")"
+	local top_tables_desc="enabled"
+	[ "$show_top" -eq 0 ] && top_tables_desc="disabled"
+	printf "%-16s%s\n" "Top tables:" "$(color cyan "$top_tables_desc")"
 	printf "%-16s%s\n" "Inputs:" "$(color cyan "${#inputs[@]}")"
 
 	if [ "$rotated_depth" -eq 0 ]; then
@@ -1662,23 +1774,29 @@ main() {
 			ua_desc="enabled"
 		fi
 		printf "%-16s%s\n" "User agents:" "$(color cyan "$ua_desc")"
-		if [ "$username_any" -eq 1 ] || [ -n "$username_filter" ]; then
-			local username_desc="$username_filter"
-			[ "$username_any" -eq 1 ] && username_desc="any authenticated"
-			printf "%-16s%s\n" \
-				"Username:" "$(color cyan "$username_desc")"
+		if [ "$username_any" -eq 1 ] \
+			|| [ "${#username_filters[@]}" -gt 0 ]
+		then
+			local -a username_descriptions=()
+			[ "$username_any" -eq 1 ] \
+				&& username_descriptions+=("any authenticated")
+			for filter_value in "${username_filters[@]}"; do
+				if [ "$filter_value" = "-" ]; then
+					username_descriptions+=("unauthenticated")
+				else
+					username_descriptions+=("$filter_value")
+				fi
+			done
+			print_filter_values "Username:" "${username_descriptions[@]}"
 		fi
-		if [ -n "$path_contains" ]; then
-			printf "%-16s%s\n" \
-				"Path contains:" "$(color cyan "$path_contains")"
+		if [ "${#path_filters[@]}" -gt 0 ]; then
+			print_filter_values "Path filter:" "${path_filters[@]}"
 		fi
-		if [ -n "$query_contains" ]; then
-			printf "%-16s%s\n" \
-				"Query contains:" "$(color cyan "$query_contains")"
+		if [ "${#query_filters[@]}" -gt 0 ]; then
+			print_filter_values "Query filter:" "${query_filters[@]}"
 		fi
-		if [ -n "$status_filter" ]; then
-			printf "%-16s%s\n" \
-				"Status:" "$(color cyan "$status_filter")"
+		if [ "${#status_filters[@]}" -gt 0 ]; then
+			print_filter_values "Status filter:" "${status_filters[@]}"
 		fi
 	fi
 
@@ -1705,6 +1823,18 @@ main() {
 	section "Parsing"
 	printf "%s\n\n" "$(color dim "Reading and analyzing logs...")"
 
+	local filter_separator=$'\034'
+	local username_filter_values path_filter_values
+	local query_filter_values status_filter_values
+	username_filter_values=$(join_values \
+		"$filter_separator" "${username_filters[@]}")
+	path_filter_values=$(join_values \
+		"$filter_separator" "${path_filters[@]}")
+	query_filter_values=$(join_values \
+		"$filter_separator" "${query_filters[@]}")
+	status_filter_values=$(join_values \
+		"$filter_separator" "${status_filters[@]}")
+
 	# Stream all selected files once and tee counts lines in parallel
 	if [ "$type" = "access" ]; then
 		(
@@ -1720,8 +1850,9 @@ main() {
 				fi
 			} | run_access_stats \
 				"$number" "$meta_top_ips" "$with_uas" \
-				"$username_filter" "$username_any" "$path_contains" \
-				"$query_contains" "$status_filter" "$match_count_file" \
+				"$username_filter_values" "$username_any" \
+				"$path_filter_values" "$query_filter_values" \
+				"$status_filter_values" "$match_count_file" "$show_top" \
 			| format_marked_output
 	else
 		(
