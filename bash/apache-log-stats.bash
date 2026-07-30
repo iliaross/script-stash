@@ -34,10 +34,15 @@
 #   # Disable GeoIP and colors (for scripting)
 #   ./apache-log-stats.bash -i /var/log/apache2/access.log --no-geoip --no-color
 #
+#   # Analyze matching requests for one authenticated username
+#   ./apache-log-stats.bash -i /var/log/apache2/access.log \
+#     --filter-username user --filter-path /vm/6/pro \
+#     --filter-query serial --filter-status 200
+#
 # Exit codes:
 #   0  success
 #   1  error (usage, missing deps, file not found)
-#   2  no lines parsed (empty log stream)
+#   2  no lines parsed or no requests matched
 
 set -euo pipefail
 umask 077
@@ -235,7 +240,7 @@ human_bytes() {
 
 	if have_cmd numfmt; then
 		numfmt --to=si --format="%.1f" "$n" 2>/dev/null \
-			| sed 's/\.0\([a-zA-Z]\)/\1/'
+			| sed -e 's/\.0\([a-zA-Z]\)/\1/' -e 's/\.0$//'
 		return
 	fi
 
@@ -248,7 +253,7 @@ human_count() {
 
 	if have_cmd numfmt; then
 		numfmt --to=si --format="%.1f" "$n" 2>/dev/null \
-			| sed 's/\.0\([a-zA-Z]\)/\1/' \
+			| sed -e 's/\.0\([a-zA-Z]\)/\1/' -e 's/\.0$//' \
 			| tr 'K' 'k'
 		return
 	fi
@@ -271,31 +276,60 @@ cleanup_tmp() {
 	[ -n "$d" ] && [ -d "$d" ] && rm -rf "$d"
 }
 
+# Print one aligned help row. The longest option signature is 35 characters,
+# leaving exactly two spaces before every description.
+usage_row() {
+	printf '  %-35s  %s\n' "$1" "$2" >&2
+}
+
 # Print help and exit
 usage() {
-	cat >&2 <<-EOF
-	Usage: $(basename "$0") -i <log-file> [-i <log-file> ...] [options]
+	printf 'Usage: %s -i <log-file> [-i <log-file> ...] [options]\n' \
+		"$(basename "$0")" >&2
+	printf '\nOptions:\n' >&2
 
-	Options:
-	  -i, --input          Log file to parse (repeatable; preserves order)
-	  -t, --type           access | error | auto (default: auto)
-	  -n, --number         Number of rows to show (default: 25)
+	usage_row "-i,  --input <log-file>" \
+		"Log file to parse (repeatable)"
+	usage_row "-t,  --type <type>" \
+		"access | error | auto (default: auto)"
+	usage_row "-n,  --number [<rows>]" \
+		"Rows to show (default: 25):"
+	usage_row "" " -n       show all rows"
+	usage_row "" " -n 100   show 100 rows"
 
-	  -R, --rotated [n]    Include rotated siblings per input:
-	                        -R      include all rotated logs
-	                        -R n    include newest n rotated logs
+	printf '\n' >&2
+	usage_row "-R,  --rotated [<count>]" \
+		"Include rotated siblings per input:"
+	usage_row "" " -R     include all rotated logs"
+	usage_row "" " -R 5   include newest 5 rotated logs"
 
-	      --user-agents    Show user-agent stats (slower; default: off)
-	      --progress       Show progress meter (default: auto)
-	      --no-geoip       Disable GeoIP output
-	      --no-color       Disable colors
-	  -h, --help           Show help
+	printf '\n' >&2
+	usage_row "-fU, --filter-username [<username>]" \
+		"Filter by authenticated username:"
+	usage_row "" " -fU        any authenticated username; list unique matches"
+	usage_row "" " -fU user   exact username"
 
-	Exit codes:
-	  0 success
-	  2 no lines parsed
-	  1 error
-	EOF
+	printf '\n' >&2
+	usage_row "-fP, --filter-path <text>" \
+		"Path contains <text>"
+	usage_row "-fQ, --filter-query <text>" \
+		"Query contains <text>"
+	usage_row "-fS, --filter-status <code>" \
+		"HTTP status is <code> (100-599)"
+
+	printf '\n' >&2
+	usage_row "     --user-agents" \
+		"Show user-agent stats"
+	usage_row "     --progress" \
+		"Show progress meter (default: auto)"
+	usage_row "     --no-geoip" "Disable GeoIP output"
+	usage_row "     --no-color" "Disable colors"
+	usage_row "-h,  --help" "Show help"
+
+	printf '\nExit codes:\n' >&2
+	printf '  0 success\n' >&2
+	printf '  2 no lines parsed or no requests matched\n' >&2
+	printf '  1 error\n' >&2
 	exit 1
 }
 
@@ -673,6 +707,12 @@ run_access_stats() {
 	local top_n="$1"
 	local meta_file="$2"
 	local with_uas="$3"
+	local username_filter="$4"
+	local username_any="$5"
+	local path_contains="$6"
+	local query_contains="$7"
+	local status_filter="$8"
+	local match_count_file="$9"
 
 	need_cmd gawk
 
@@ -680,7 +720,13 @@ run_access_stats() {
 	LC_ALL=C gawk \
 		-v TOP="$top_n" \
 		-v META="$meta_file" \
-		-v WITH_UA="$with_uas" '
+		-v WITH_UA="$with_uas" \
+		-v PATH_CONTAINS="$path_contains" \
+		-v QUERY_CONTAINS="$query_contains" \
+		-v USERNAME_FILTER="$username_filter" \
+		-v USERNAME_ANY="$username_any" \
+		-v STATUS_FILTER="$status_filter" \
+		-v MATCH_COUNT_FILE="$match_count_file" '
 function trim_dot0(s) {
 	if (s ~ /\.0[kMGTP]$/) sub(/\.0/, "", s)
 	return s
@@ -731,7 +777,8 @@ function emit_top_ips(arr, n,   k,c,i) {
 	for (k in arr) {
 		c = arr[k]
 		printf "%d\t%s\n", c, k >> META
-		if (++i >= n) break
+		i++
+		if (n > 0 && i >= n) break
 	}
 	delete PROCINFO["sorted_in"]
 }
@@ -742,7 +789,8 @@ function print_table(title, arr, n,   k,c,i) {
 	for (k in arr) {
 		c = arr[k]
 		printf "  %8s  %s\n", hn(c), k
-		if (++i >= n) break
+		i++
+		if (n > 0 && i >= n) break
 	}
 	delete PROCINFO["sorted_in"]
 }
@@ -755,7 +803,8 @@ function print_table_size(title, cnt, bytes, n,   k,c,i,b,lbl) {
 		b = bytes[k] + 0
 		lbl = (b == 0 ? "redirected" : hb(b))
 		printf "  %8s  %s [%s]\n", hn(c), k, lbl
-		if (++i >= n) break
+		i++
+		if (n > 0 && i >= n) break
 	}
 	delete PROCINFO["sorted_in"]
 }
@@ -769,7 +818,8 @@ function print_table_size_queryonly(title, cnt, bytes, n,   k,c,i,b,lbl) {
 		b = bytes[k] + 0
 		lbl = (b == 0 ? "redirected" : hb(b))
 		printf "  %8s  %s [%s]\n", hn(c), k, lbl
-		if (++i >= n) break
+		i++
+		if (n > 0 && i >= n) break
 	}
 	delete PROCINFO["sorted_in"]
 }
@@ -781,34 +831,96 @@ function print_table_by_size(title, cnt, bytes, n,   k,i,b,lbl) {
 		b = bytes[k] + 0
 		lbl = (b == 0 ? "redirected" : hb(b))
 		printf "  %8s  %s (%s)\n", lbl, k, hn(cnt[k])
-		if (++i >= n) break
+		i++
+		if (n > 0 && i >= n) break
 	}
 	delete PROCINFO["sorted_in"]
+}
+
+BEGIN {
+	total = 0
+	total_bytes = 0
+	path_filter = tolower(PATH_CONTAINS)
+	query_filter = tolower(QUERY_CONTAINS)
 }
 
 {
 	# Split on quotes to get request/referrer/ua cheaply
 	# q[1]=pre, q[2]=request, q[3]=post, q[4]=ref, q[6]=ua
-	total++
 	nq = split($0, q, "\"")
 
-	# Tokenize pre-quote to find IP and timestamp fields.
+	# Parse request: METHOD URI PROTO
+	req = q[2]
+	split(req, r, /[ \t]+/)
+	method = r[1]
+	uri_full = r[2]
+	if (method == "") method = "-"
+	if (uri_full == "") uri_full = "-"
+
+	# Keep the query separate so path and query filters cannot overlap.
+	query = ""
+	query_at = index(uri_full, "?")
+	if (query_at > 0)
+		query = substr(uri_full, query_at + 1)
+
+	# Optionally strip query part to reduce URL cardinality
+	uri = uri_full
+	sub(/\?.*$/, "", uri)
+
+	# Normalize leading slashes: //path -> /path
+	sub(/^\/+/, "/", uri)
+	sub(/^\/+/, "/", uri_full)
+
+	# Normalize trailing slash (except for root "/")
+	if (uri != "/") sub(/\/+$/, "", uri)
+	if (uri_full != "/") sub(/\/+$/, "", uri_full)
+
+	# Tokenize pre-quote to find the IP, authenticated username, and timestamp.
 	np = split(q[1], p, /[ \t]+/)
 	ip = p[1]
 	if (ip == "") ip = "-"
 
-	# Locate the timestamp token by pattern (more robust than fixed positions)
+	# Locate the timestamp token instead of relying on a fixed field count. In
+	# the standard combined layout, the authenticated username (%u) immediately
+	# precedes the timestamp.
 	t0 = ""
 	tz0 = ""
+	username = "-"
 	for (i = 1; i <= np; i++) {
 		if (p[i] ~ /^\[[0-9]{1,2}\/[A-Za-z]{3}\/[0-9]{4}:/) {
 			t0 = p[i]
+			if (i > 2) username = p[i-1]
 			if (i+1 <= np) tz0 = p[i+1]
 			break
 		}
 	}
 
+	# Parse status and bytes from the post-request chunk before filtering.
+	status = "-"
+	bytes = 0
+	if (match(q[3], /[[:space:]]*([0-9]{3})[[:space:]]+([0-9-]+)/, m)) {
+		status = m[1]
+		bytes = m[2]
+	}
+
+	# Applying filters before counters keeps every report section scoped to the
+	# same matching requests. Path/query filters are literal and case-insensitive;
+	# the authenticated username and HTTP status are exact matches.
+	if (path_filter != "" && index(tolower(uri), path_filter) == 0)
+		next
+	if (query_filter != "" && index(tolower(query), query_filter) == 0)
+		next
+	if (USERNAME_ANY == 1) {
+		if (username == "-") next
+	} else if (USERNAME_FILTER != "" && username != USERNAME_FILTER)
+		next
+	if (STATUS_FILTER != "" && status != STATUS_FILTER)
+		next
+
+	total++
+
 	ips[ip]++
+	if (USERNAME_ANY == 1) usernames[username]++
 
 	# Track min/max timestamp using a cheap sortable key
 	if (t0 != "" && tz0 != "") {
@@ -843,34 +955,7 @@ function print_table_by_size(title, cnt, bytes, n,   k,i,b,lbl) {
 		per_hour[hour]++
 	}
 
-	# Parse request: METHOD URI PROTO
-	req = q[2]
-	split(req, r, /[ \t]+/)
-	method = r[1]
-	uri_full = r[2]
-	if (method == "") method = "-"
-	if (uri_full == "") uri_full = "-"
 	methods[method]++
-
-	# Optionally strip query part to reduce URL cardinality
-	uri = uri_full
-	sub(/\?.*$/, "", uri)
-
-	# Normalize leading slashes: //path -> /path
-	sub(/^\/+/, "/", uri)
-	sub(/^\/+/, "/", uri_full)
-	
-	# Normalize trailing slash (except for root "/")
-	if (uri != "/") sub(/\/+$/, "", uri)
-	if (uri_full != "/") sub(/\/+$/, "", uri_full)
-
-	# Parse status and bytes from the post-request chunk
-	status = "-"
-	bytes = 0
-	if (match(q[3], /[[:space:]]*([0-9]{3})[[:space:]]+([0-9-]+)/, m)) {
-		status = m[1]
-		bytes = m[2]
-	}
 
 	statuses[status]++
 	if (status ~ /^[0-9][0-9][0-9]$/) {
@@ -915,6 +1000,9 @@ function print_table_by_size(title, cnt, bytes, n,   k,i,b,lbl) {
 }
 
 END {
+	printf "%d\n", total > MATCH_COUNT_FILE
+	close(MATCH_COUNT_FILE)
+
 	printf "@@SECTION@@ Access log\n"
 
 	printf "@@SUB@@ Summary\n"
@@ -923,6 +1011,16 @@ END {
 	uip=0; for (k in ips) uip++
 	uuri=0; for (k in uris) uuri++
 	printf "  Unique IPs:        %s\n", hn(uip)
+	if (USERNAME_ANY == 1) {
+		uuser=0
+		umatches=0
+		for (k in usernames) {
+			uuser++
+			umatches += usernames[k]
+		}
+		printf "  Matched usernames: %s\n", hn(umatches)
+		printf "  Unique usernames:  %s\n", hn(uuser)
+	}
 	printf "  Unique URLs:       %s\n", hn(uuri)
 	printf "  Bytes sent:        %s\n", hb(total_bytes)
 
@@ -956,11 +1054,15 @@ END {
 		printf "  Max:     %s\n", hb(max_bytes)
 	}
 
-	print_table("Busiest hours", per_hour, (TOP < 12 ? TOP : 12))
+	print_table("Busiest hours", per_hour,
+		(TOP == 0 ? 0 : (TOP < 12 ? TOP : 12)))
 
 	print_table("Top IPs", ips, TOP)
 	emit_top_ips(ips, TOP)
 	print_table("Top IPs by bandwidth (bytes summed)", bytes_ip, TOP)
+
+	if (USERNAME_ANY == 1)
+		print_table("Matched usernames", usernames, 0)
 
 	print_table_size("Top URLs by count", uris, url_b, TOP)
 	print_table_by_size("Top URLs by size", uris, url_b, TOP)
@@ -1049,7 +1151,8 @@ function print_table(title, arr, n,   k,c,i) {
 	for (k in arr) {
 		c = arr[k]
 		printf "  %8s  %s\n", hn(c), k
-		if (++i >= n) break
+		i++
+		if (n > 0 && i >= n) break
 	}
 	delete PROCINFO["sorted_in"]
 }
@@ -1290,10 +1393,16 @@ main() {
 
 	local type="auto"
 	local number=25
+	local number_all=0
 	local rotated_depth=0
 	local show_progress=0
 	local geoip_disabled=0
 	local with_uas=0
+	local username_filter=""
+	local username_any=0
+	local path_contains=""
+	local query_contains=""
+	local status_filter=""
 
 	local -a inputs=()
 
@@ -1311,9 +1420,14 @@ main() {
 				type="$1"
 				;;
 			-n|--number)
-				shift
-				[ "${1:-}" = "" ] && usage
-				number="$1"
+				if [ "${2:-}" != "" ] && [[ "${2:-}" =~ ^[0-9]+$ ]]; then
+					number="$2"
+					number_all=0
+					shift
+				else
+					number=0
+					number_all=1
+				fi
 				;;
 			-R|--rotated)
 				if [ "${2:-}" != "" ] && [[ "${2:-}" =~ ^[0-9]+$ ]]; then
@@ -1322,6 +1436,31 @@ main() {
 				else
 					rotated_depth=-1
 				fi
+				;;
+			-fU|--filter-username)
+				if [ "${2:-}" != "" ] && [[ "${2:-}" != -* ]]; then
+					username_filter="$2"
+					username_any=0
+					shift
+				else
+					username_filter=""
+					username_any=1
+				fi
+				;;
+			-fP|--filter-path)
+				shift
+				[ "${1:-}" = "" ] && usage
+				path_contains="$1"
+				;;
+			-fQ|--filter-query)
+				shift
+				[ "${1:-}" = "" ] && usage
+				query_contains="$1"
+				;;
+			-fS|--filter-status)
+				shift
+				[ "${1:-}" = "" ] && usage
+				status_filter="$1"
 				;;
 			--user-agents)
 				with_uas=1
@@ -1355,6 +1494,15 @@ main() {
 
 	[ "${#inputs[@]}" -eq 0 ] && usage
 
+	if [ -n "$status_filter" ] \
+		&& ! [[ "$status_filter" =~ ^[1-5][0-9]{2}$ ]]
+	then
+		printf '%s\n' \
+			"$(color red \
+				"Error: bad --filter-status value: $status_filter")" >&2
+		exit 1
+	fi
+
 	need_cmd gzip
 	need_cmd gawk
 
@@ -1385,10 +1533,29 @@ main() {
 		exit 1
 	fi
 
-	if ! [[ "$number" =~ ^[0-9]+$ ]] || [ "$number" -lt 1 ]; then
+	local filters_active=0
+	if [ "$username_any" -eq 1 ] \
+		|| [ -n "$username_filter" ] \
+		|| [ -n "$path_contains" ] \
+		|| [ -n "$query_contains" ] \
+		|| [ -n "$status_filter" ]
+	then
+		filters_active=1
+	fi
+
+	if [ "$type" = "error" ] && [ "$filters_active" -eq 1 ]; then
 		printf '%s\n' \
-			"$(color red "Error: bad --number value: $number")" >&2
+			"$(color red "Error: request filters require an access log")" \
+			>&2
 		exit 1
+	fi
+
+	if [ "$number_all" -eq 0 ]; then
+		if ! [[ "$number" =~ ^[0-9]+$ ]] || [ "$number" -lt 1 ]; then
+			printf '%s\n' \
+				"$(color red "Error: bad --number value: $number")" >&2
+			exit 1
+		fi
 	fi
 
 	# Build final file list in input order, then add rotated siblings per
@@ -1425,10 +1592,10 @@ main() {
 	# Require decompress tools only if we are going to read those formats
 	for f in "${files[@]}"; do
 		case "$f" in
-			*.bz2|*.tbz2|*.tar.bz2) need_cmd bzip2 ;;
-			*.xz|*.txz|*.tar.xz)    need_cmd xz ;;
-			*.zst|*.tzst|*.tar.zst) need_cmd zstd ;;
-			*.zip)                  need_cmd unzip ;;
+			*.bz2|*.tbz2) need_cmd bzip2 ;;
+			*.xz|*.txz)   need_cmd xz ;;
+			*.zst|*.tzst) need_cmd zstd ;;
+			*.zip)        need_cmd unzip ;;
 		esac
 	done
 
@@ -1439,31 +1606,53 @@ main() {
 
 	local meta_top_ips="$tmp_dir/top_ips.tsv"
 	local line_count_file="$tmp_dir/lines.txt"
+	local match_count_file="$tmp_dir/matches.txt"
 
 	section "Apache log stats"
-	printf "Type:        %s\n" "$(color cyan "$type")"
-	printf "Top entries: %s\n" "$(color cyan "$number")"
-	printf "Inputs:      %s\n" "$(color cyan "${#inputs[@]}")"
+	printf "%-16s%s\n" "Type:" "$(color cyan "$type")"
+	local number_desc="$number"
+	[ "$number_all" -eq 1 ] && number_desc="all"
+	printf "%-16s%s\n" "Top entries:" "$(color cyan "$number_desc")"
+	printf "%-16s%s\n" "Inputs:" "$(color cyan "${#inputs[@]}")"
 
 	if [ "$rotated_depth" -eq 0 ]; then
-		printf "Rotated:     %s\n" "$(color cyan "none")"
+		printf "%-16s%s\n" "Rotated:" "$(color cyan "none")"
 	elif [ "$rotated_depth" -eq -1 ]; then
-		printf "Rotated:     %s\n" "$(color cyan "all")"
+		printf "%-16s%s\n" "Rotated:" "$(color cyan "all")"
 	else
-		printf "Rotated:     %s\n" "$(color cyan "yes (newest $rotated_depth)")"
+		printf "%-16s%s\n" \
+			"Rotated:" "$(color cyan "yes (newest $rotated_depth)")"
 	fi
 	local progress_desc="disabled"
 	if [ "$show_progress" -eq 1 ]; then
 		progress_desc="enabled"
 	fi
-	printf "Progress:    %s\n" "$(color cyan "$progress_desc")"
+	printf "%-16s%s\n" "Progress:" "$(color cyan "$progress_desc")"
 
 	if [ "$type" = "access" ]; then
 		local ua_desc="disabled"
 		if [ "$with_uas" -eq 1 ]; then
 			ua_desc="enabled"
 		fi
-		printf "User agents: %s\n" "$(color cyan "$ua_desc")"
+		printf "%-16s%s\n" "User agents:" "$(color cyan "$ua_desc")"
+		if [ "$username_any" -eq 1 ] || [ -n "$username_filter" ]; then
+			local username_desc="$username_filter"
+			[ "$username_any" -eq 1 ] && username_desc="any authenticated"
+			printf "%-16s%s\n" \
+				"Username:" "$(color cyan "$username_desc")"
+		fi
+		if [ -n "$path_contains" ]; then
+			printf "%-16s%s\n" \
+				"Path contains:" "$(color cyan "$path_contains")"
+		fi
+		if [ -n "$query_contains" ]; then
+			printf "%-16s%s\n" \
+				"Query contains:" "$(color cyan "$query_contains")"
+		fi
+		if [ -n "$status_filter" ]; then
+			printf "%-16s%s\n" \
+				"Status:" "$(color cyan "$status_filter")"
+		fi
 	fi
 
 	# GeoIP can work via geoiplookup or via mmdblookup+db
@@ -1482,7 +1671,7 @@ main() {
 		geoip_desc="enabled"
 	fi
 	
-	printf "GeoIP:       %s\n\n" "$(color cyan "$geoip_desc")"
+	printf "%-16s%s\n\n" "GeoIP:" "$(color cyan "$geoip_desc")"
 
 	print_file_list "${files[@]}"
 
@@ -1502,7 +1691,10 @@ main() {
 				else
 					cat
 				fi
-			} | run_access_stats "$number" "$meta_top_ips" "$with_uas" \
+			} | run_access_stats \
+				"$number" "$meta_top_ips" "$with_uas" \
+				"$username_filter" "$username_any" "$path_contains" \
+				"$query_contains" "$status_filter" "$match_count_file" \
 			| format_marked_output
 	else
 		(
@@ -1520,23 +1712,39 @@ main() {
 			| format_marked_output
 	fi
 
-	# Use the tee-produced counter to detect empty streams
+	# Access logs use the parser-produced match count so filtered-out requests
+	# are not reported as parsed. Error logs use the raw stream line count.
 	local parsed_lines
-	parsed_lines=$(cat "$line_count_file" 2>/dev/null || printf '0')
+	if [ "$type" = "access" ]; then
+		parsed_lines=$(cat "$match_count_file" 2>/dev/null || printf '0')
+	else
+		parsed_lines=$(cat "$line_count_file" 2>/dev/null || printf '0')
+	fi
 	if ! [[ "$parsed_lines" =~ ^[0-9]+$ ]]; then
 		parsed_lines=0
 	fi
 
 	if [ "$parsed_lines" -eq 0 ]; then
-		printf '\n%s\n' \
-			"$(color yellow "No lines parsed (empty log stream).")" >&2
+		if [ "$filters_active" -eq 1 ]; then
+			printf '\n%s\n' \
+				"$(color yellow "No access-log requests matched the filters.")" \
+				>&2
+		else
+			printf '\n%s\n' \
+				"$(color yellow "No lines parsed (empty log stream).")" >&2
+		fi
 		exit 2
 	fi
 
 	printf "\n"
 	section "Done"
-	printf "  Parsed lines: %s\n" \
-		"$(color green "$(human_count "$parsed_lines")")"
+	if [ "$type" = "access" ] && [ "$filters_active" -eq 1 ]; then
+		printf "  Matched requests: %s\n" \
+			"$(color green "$(human_count "$parsed_lines")")"
+	else
+		printf "  Parsed lines: %s\n" \
+			"$(color green "$(human_count "$parsed_lines")")"
+	fi
 	printf "\n"
 
 	# GeoIP uses the meta file written by run_access_stats.
