@@ -477,8 +477,10 @@ incl_instances=()
 incl_instances_lemp=()
 
 # Record a running VM under the hosts key derived from its name, e.g.
-# "Alma 10 (Virtualmin Pro and Nginx)" becomes alma10-pro. Cloudmin VMs get
-# no edition suffix, so "Rocky 10 (Cloudmin)" becomes rocky10.
+# "Alma 10 (Virtualmin Pro and Nginx)" becomes alma10-pro. Cloudmin and
+# Webmin keys get a "cloudmin:" or "webmin:" prefix, and Webmin ones no
+# edition suffix, e.g. "Rocky 10 (Cloudmin Pro)" becomes cloudmin:rocky10-pro
+# and "Rocky 10 (Webmin)" becomes webmin:rocky10.
 add_running_instance() {
 	local name="$1"
 	local os_name version type running_key
@@ -494,7 +496,7 @@ add_running_instance() {
 
 	if echo "$name" | grep -q "FreeBSD"; then
 		type=""
-	elif echo "$name" | grep -q "Cloudmin"; then
+	elif echo "$name" | grep -q "Webmin"; then
 		type=""
 	elif echo "$name" | grep -q "WikiSuite"; then
 		type="-tiki"
@@ -507,12 +509,27 @@ add_running_instance() {
 	running_key="${os_name}${version}${type}"
 	if echo "$name" | grep -q "Virtualmin Shop"; then
 		running_key="local"
+	elif echo "$name" | grep -q "Cloudmin"; then
+		running_key="cloudmin:$running_key"
+	elif echo "$name" | grep -q "Webmin"; then
+		running_key="webmin:$running_key"
 	fi
 
 	incl_instances+=( "$running_key" )
 	if echo "$name" | grep -q "Nginx"; then
 		incl_instances_lemp+=( "$running_key" )
 	fi
+}
+
+# Print the key that matches a host against running VMs. Hosts in a cloudmin
+# or webmin domain get the same prefix as Cloudmin or Webmin VMs, so
+# rocky10-pro in cloudmin.dev and virtualmin.dev match different VMs.
+host_running_key() {
+	case "$1" in
+		*.cloudmin.*) printf 'cloudmin:%s\n' "${1%%.*}" ;;
+		*.webmin.*)   printf 'webmin:%s\n' "${1%%.*}" ;;
+		*)            printf '%s\n' "${1%%.*}" ;;
+	esac
 }
 
 if [ "$running_mode" -eq 1 ]; then
@@ -653,6 +670,7 @@ for h in "${debug_hosts_all[@]}"; do
 	server_no_star="${server_no_debug%\*}"
 	server="$server_no_star"
 	server_key="${server%%.*}"
+	server_running_key="$(host_running_key "$server")"
 	
 	is_local=0
 	if [ "${#local_bases[@]}" -ne 0 ] && in_list "$server" "${local_bases[@]}"; then
@@ -683,7 +701,7 @@ for h in "${debug_hosts_all[@]}"; do
 		if [ "${#incl_instances[@]}" -eq 0 ]; then
 			continue
 		fi
-		if ! in_list "$server_key" "${incl_instances[@]}"; then
+		if ! in_list "$server_running_key" "${incl_instances[@]}"; then
 			continue
 		fi
 	fi
@@ -704,8 +722,17 @@ for h in "${debug_hosts_all[@]}"; do
 		fi
 	fi
 
+	# Cloudmin GPL and Pro are separate server-manager modules, so each one
+	# syncs only to hosts of its own edition
+	if [ "$project_root" = "cloudmin-pro" ] && ! printf '%s\n' "$server_raw" | grep -q -- '-pro'; then
+		continue
+	fi
+	if [ "$project_root" = "cloudmin-gpl" ] && printf '%s\n' "$server_raw" | grep -q -- '-pro'; then
+		continue
+	fi
+
 	if printf '%s\n' "$project_root" | grep -q 'nginx'; then
-		if [ "${#incl_instances_lemp[@]}" -ne 0 ] && ! in_list "$server_key" "${incl_instances_lemp[@]}"; then
+		if [ "${#incl_instances_lemp[@]}" -ne 0 ] && ! in_list "$server_running_key" "${incl_instances_lemp[@]}"; then
 			continue
 		fi
 	fi
@@ -805,7 +832,7 @@ if [ "$project_root" = "usermin" ] && [ "$mode_label" != "full" ]; then
 	esac
 fi
 
-if [[ "$project_root" =~ ^(authentic-theme-src|virtual-server-theme|server-manager|virtualmin-.*)$ ]]; then
+if [[ "$project_root" =~ ^(authentic-theme-src|virtual-server-theme|cloudmin-gpl|cloudmin-pro|virtualmin-.*)$ ]]; then
 	if [ "$mode_label" = "module" ]; then
 		subprojectdir="$target_project_rel"
 	elif [ -n "$arg2" ] && ! is_control_arg "$arg2"; then
@@ -838,8 +865,8 @@ if [[ "$project_root" =~ ^(authentic-theme-src|virtual-server-theme|server-manag
 		projectroottarget="${projectroottarget/$project_root/virtual-server/pro}"
 	fi
 
-	if [ "$target_project_rel" = "server-manager/server-manager" ]; then
-		projectroottarget="${projectroottarget/$project_root\/server-manager/server-manager}"
+	if [ "$project_root" = "cloudmin-gpl" ] || [ "$project_root" = "cloudmin-pro" ]; then
+		projectroottarget="${projectroottarget/$project_root/server-manager}"
 		rsyncextraflags+=" --exclude=module.info"
 	fi
 fi
@@ -1203,7 +1230,7 @@ process_host() {
 
 	if printf '%s\n' "$project_root" | grep -q 'nginx'; then
 		if [ "${#incl_instances_lemp[@]}" -ne 0 ]; then
-			if ! in_list "$server_key" "${incl_instances_lemp[@]}"; then
+			if ! in_list "$(host_running_key "$server")" "${incl_instances_lemp[@]}"; then
 				return 0
 			fi
 		fi
@@ -1379,17 +1406,6 @@ process_host() {
 	if [ "$project_root" = "wikisuite-packages" ] && printf '%s\n' "$server_raw" | grep -q 'tiki'; then
 		projectroottarget="root"
 		target="root"
-	fi
-
-	if [ "$target_project_rel" = "server-manager/server-manager" ]; then
-		projectroottarget="${projectroottarget//\/server-manager\/server-manager/}"
-		if [ "$freebsdwebmindir" -eq 1 ]; then
-			return 0
-		elif [ "$rhelwebmindir" -eq 1 ]; then
-			target="usr/libexec/$projectroottarget"
-		else
-			target="usr/share/$projectroottarget"
-		fi
 	fi
 
 	if printf '%s\n' "$server" | grep -q 'build'; then
