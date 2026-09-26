@@ -16,8 +16,8 @@
 #     (e.g. debug-cloud-pubkey-1.2.3.4:2222), it prefers connecting by IP
 #     and uses that port for SSH/rsync.
 #   - Detects "local" debug bases only from [auto-local] segments
-#   - Detects locally running virtual machines via "prlctl" or "virsh" and
-#     matches them to those bases
+#   - Detects locally running virtual machines via "prlctl" or "virsh", and
+#     UTM ones via "utmctl", then matches them to those bases
 #   - Maps project roots to proper Webmin/Usermin/module paths on the target
 #   - Filters hosts by:
 #       --running             (only running local VMs)
@@ -476,6 +476,45 @@ declare -a incl_instances_lemp
 incl_instances=()
 incl_instances_lemp=()
 
+# Record a running VM under the hosts key derived from its name, e.g.
+# "Alma 10 (Virtualmin Pro and Nginx)" becomes alma10-pro. Cloudmin VMs get
+# no edition suffix, so "Rocky 10 (Cloudmin)" becomes rocky10.
+add_running_instance() {
+	local name="$1"
+	local os_name version type running_key
+
+	os_name="$(echo "$name" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
+	version="$(echo "$name" | awk '{print $2}')"
+	if [[ "$version" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+		version=$(printf "%.0f" "$version")
+	fi
+	if echo "$name" | grep -qE "Ubuntu .*\.10|Ubuntu [0-9]+\.0[13579]"; then
+		version="$(echo "$name" | grep -oE '[0-9]+' | head -1)i"
+	fi
+
+	if echo "$name" | grep -q "FreeBSD"; then
+		type=""
+	elif echo "$name" | grep -q "Cloudmin"; then
+		type=""
+	elif echo "$name" | grep -q "WikiSuite"; then
+		type="-tiki"
+	elif echo "$name" | grep -q "Pro"; then
+		type="-pro"
+	else
+		type="-gpl"
+	fi
+
+	running_key="${os_name}${version}${type}"
+	if echo "$name" | grep -q "Virtualmin Shop"; then
+		running_key="local"
+	fi
+
+	incl_instances+=( "$running_key" )
+	if echo "$name" | grep -q "Nginx"; then
+		incl_instances_lemp+=( "$running_key" )
+	fi
+}
+
 if [ "$running_mode" -eq 1 ]; then
 	if command -v prlctl >/dev/null 2>&1; then
 		prlctl_list="$(prlctl list)"
@@ -483,37 +522,7 @@ if [ "$running_mode" -eq 1 ]; then
 		while IFS= read -r line; do
 			((line_counter++))
 			[ "$line_counter" -eq 1 ] && continue
-
-			name="$(echo "$line" | awk '{print substr($0, index($0,$4))}')"
-
-			os_name="$(echo "$name" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
-			version="$(echo "$name" | awk '{print $2}')"
-			if [[ "$version" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
-				version=$(printf "%.0f" "$version")
-			fi
-			if echo "$name" | grep -qE "Ubuntu .*\.10|Ubuntu [0-9]+\.0[13579]"; then
-				version="$(echo "$name" | grep -oE '[0-9]+' | head -1)i"
-			fi
-
-			if echo "$name" | grep -q "FreeBSD"; then
-				type=""
-			elif echo "$name" | grep -q "WikiSuite"; then
-				type="-tiki"
-			elif echo "$name" | grep -q "Pro"; then
-				type="-pro"
-			else
-				type="-gpl"
-			fi
-
-			running_key="${os_name}${version}${type}"
-			if echo "$name" | grep -q "Virtualmin Shop"; then
-				running_key="local"
-			fi
-
-			incl_instances+=( "$running_key" )
-			if echo "$name" | grep -q "Nginx"; then
-				incl_instances_lemp+=( "$running_key" )
-			fi
+			add_running_instance "$(echo "$line" | awk '{print substr($0, index($0,$4))}')"
 		done <<<"$prlctl_list"
 	elif command -v virsh >/dev/null 2>&1; then
 		virsh_list="$(virsh list --title)"
@@ -521,38 +530,19 @@ if [ "$running_mode" -eq 1 ]; then
 		while IFS= read -r line; do
 			((line_counter++))
 			[ "$line_counter" -le 2 ] && continue
-
-			name="$(echo "$line" | awk '{print substr($0, index($0,$4))}')"
-
-			os_name="$(echo "$name" | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
-			version="$(echo "$name" | awk '{print $2}')"
-			if [[ "$version" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
-				version=$(printf "%.0f" "$version")
-			fi
-			if echo "$name" | grep -qE "Ubuntu .*\.10|Ubuntu [0-9]+\.0[13579]"; then
-				version="$(echo "$name" | grep -oE '[0-9]+' | head -1)i"
-			fi
-
-			if echo "$name" | grep -q "FreeBSD"; then
-				type=""
-			elif echo "$name" | grep -q "WikiSuite"; then
-				type="-tiki"
-			elif echo "$name" | grep -q "Pro"; then
-				type="-pro"
-			else
-				type="-gpl"
-			fi
-
-			running_key="${os_name}${version}${type}"
-			if echo "$name" | grep -q "Virtualmin Shop"; then
-				running_key="local"
-			fi
-
-			incl_instances+=( "$running_key" )
-			if echo "$name" | grep -q "Nginx"; then
-				incl_instances_lemp+=( "$running_key" )
-			fi
+			add_running_instance "$(echo "$line" | awk '{print substr($0, index($0,$4))}')"
 		done <<<"$virsh_list"
+	fi
+
+	# UTM can run next to Parallels, so check it too. Query it only while the
+	# app is running, as utmctl would otherwise launch UTM.
+	if command -v utmctl >/dev/null 2>&1 && pgrep -x -U "$UID" UTM >/dev/null 2>&1; then
+		utmctl_list="$(utmctl list)"
+		# Each line is "<UUID> <status> <name>"; only started VMs are up
+		while read -r _ utm_status utm_name; do
+			[ "$utm_status" = "started" ] || continue
+			add_running_instance "$utm_name"
+		done <<<"$utmctl_list"
 	fi
 fi
 
