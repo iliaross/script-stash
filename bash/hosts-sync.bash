@@ -498,8 +498,6 @@ add_running_instance() {
 		type=""
 	elif echo "$name" | grep -q "Webmin"; then
 		type=""
-	elif echo "$name" | grep -q "WikiSuite"; then
-		type="-tiki"
 	elif echo "$name" | grep -q "Pro"; then
 		type="-pro"
 	else
@@ -707,10 +705,6 @@ for h in "${debug_hosts_all[@]}"; do
 	fi
 
 	if [ "$project_root" = "shop.virtualmin.com" ] && [ "$server_raw" != "debug-local.virtualmin.dev" ]; then
-		continue
-	fi
-
-	if [ "$project_root" = "virtualmin-tikimanager" ] && ! printf '%s\n' "$server_raw" | grep -q 'tiki'; then
 		continue
 	fi
 
@@ -1401,11 +1395,6 @@ process_host() {
 		if [[ "$arg2" == *"sign-repo.bash" ]] || [[ "$arg2" == *"sign-all-repos.bash" ]]; then
 			target="home/rocky10-pro/.local/sbin"
 		fi
-	fi
-
-	if [ "$project_root" = "wikisuite-packages" ] && printf '%s\n' "$server_raw" | grep -q 'tiki'; then
-		projectroottarget="root"
-		target="root"
 	fi
 
 	if printf '%s\n' "$server" | grep -q 'build'; then
